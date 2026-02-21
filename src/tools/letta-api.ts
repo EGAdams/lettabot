@@ -6,14 +6,14 @@
 
 import { Letta } from '@letta-ai/letta-client';
 
-const LETTA_BASE_URL = process.env.LETTA_BASE_URL || 'https://api.letta.com';
-
 function getClient(): Letta {
+  // Resolve per-call so values from lettabot.yaml (applied at runtime) are honored.
+  const baseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
   const apiKey = process.env.LETTA_API_KEY;
   // Local servers may not require an API key
   return new Letta({ 
     apiKey: apiKey || '', 
-    baseURL: LETTA_BASE_URL,
+    baseURL: baseUrl,
     defaultHeaders: { "X-Letta-Source": "lettabot" },
   });
 }

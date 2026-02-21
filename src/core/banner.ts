@@ -4,6 +4,7 @@
 
 import { execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { isLettaApiUrl } from '../utils/server.js';
 
 const require = createRequire(import.meta.url);
 
@@ -106,13 +107,18 @@ export function printStartupBanner(agents: BannerAgent[]): void {
 
   // Status lines
   const versionStr = getVersionString();
+  const baseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
+  const uiBase = isLettaApiUrl(baseUrl)
+    ? 'https://app.letta.com'
+    : baseUrl.replace(/\/+$/, '');
+
   console.log('');
   console.log(`  Version:  ${versionStr}`);
   for (const agent of agents) {
     const ch = agent.channels.length > 0 ? agent.channels.join(', ') : 'none';
     if (agent.agentId) {
       const qs = agent.conversationId ? `?conversation=${agent.conversationId}` : '';
-      const url = `https://app.letta.com/agents/${agent.agentId}${qs}`;
+      const url = `${uiBase}/agents/${agent.agentId}${qs}`;
       console.log(`  Agent:    ${agent.name} [${ch}]`);
       console.log(`  URL:      ${url}`);
     } else {

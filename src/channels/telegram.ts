@@ -8,6 +8,7 @@
 import { Bot, InputFile } from 'grammy';
 import type { ChannelAdapter } from './types.js';
 import type { InboundAttachment, InboundMessage, InboundReaction, OutboundFile, OutboundMessage } from '../core/types.js';
+import type { TextToSpeechConfig } from '../config/types.js';
 import type { DmPolicy } from '../pairing/types.js';
 import {
   isUserAllowed,
@@ -19,6 +20,7 @@ import { basename } from 'node:path';
 import { buildAttachmentPath, downloadToFile } from './attachments.js';
 import { applyTelegramGroupGating } from './telegram-group-gating.js';
 import type { GroupModeConfig } from './group-mode.js';
+import { synthesizeElevenLabsSpeech, synthesizeGoogleSpeech } from '../tts/index.js';
 
 export interface TelegramConfig {
   token: string;
@@ -28,6 +30,7 @@ export interface TelegramConfig {
   attachmentsMaxBytes?: number;
   mentionPatterns?: string[];    // Regex patterns for mention detection
   groups?: Record<string, GroupModeConfig>;  // Per-group settings
+  tts?: TextToSpeechConfig;
 }
 
 export class TelegramAdapter implements ChannelAdapter {
@@ -491,52 +494,172 @@ export class TelegramAdapter implements ChannelAdapter {
   isRunning(): boolean {
     return this.running;
   }
+
+  supportsEditing(): boolean {
+    // Streaming text edits conflict with TTS delivery and can create many short audio messages.
+    return !this.config.tts;
+  }
   
   async sendMessage(msg: OutboundMessage): Promise<{ messageId: string }> {
-    const { markdownToTelegramV2 } = await import('./telegram-format.js');
-    
-    // Split long messages into chunks (Telegram limit: 4096 chars)
     const chunks = splitMessageText(msg.text);
+
+    const tts = this.config.tts;
+    if (!tts) {
+      const lastMessageId = await this.sendTextChunks(msg, chunks);
+      return { messageId: lastMessageId };
+    }
+
+    const mode = tts.mode || 'text-and-voice';
+    let textMessageId = '';
+    let voiceMessageId = '';
+
+    if (mode !== 'voice-only') {
+      textMessageId = await this.sendTextChunks(msg, chunks);
+    }
+
+    voiceMessageId = await this.sendVoiceChunks(msg, chunks, tts, mode === 'voice-only');
+
+    // Always return a message ID, even when TTS fails.
+    if (!textMessageId && !voiceMessageId) {
+      textMessageId = await this.sendTextChunks(msg, chunks);
+    }
+
+    // In text-and-voice mode return text message ID so any edit path only targets text.
+    const preferredMessageId = mode === 'voice-only'
+      ? (voiceMessageId || textMessageId)
+      : (textMessageId || voiceMessageId);
+    return { messageId: preferredMessageId };
+  }
+
+  private async sendTextChunks(msg: OutboundMessage, chunks: string[]): Promise<string> {
+    const { markdownToTelegramV2 } = await import('./telegram-format.js');
     let lastMessageId = '';
-    
+
     for (const chunk of chunks) {
-      // Only first chunk replies to the original message
       const replyId = !lastMessageId && msg.replyToMessageId ? Number(msg.replyToMessageId) : undefined;
-      
-      // Try MarkdownV2 first
-      try {
-        const formatted = await markdownToTelegramV2(chunk);
-        // MarkdownV2 escaping can expand text beyond 4096 - re-split if needed
-        if (formatted.length > TELEGRAM_MAX_LENGTH) {
-          const subChunks = splitFormattedText(formatted);
-          for (const sub of subChunks) {
-            const result = await this.bot.api.sendMessage(msg.chatId, sub, {
-              parse_mode: 'MarkdownV2',
-              reply_to_message_id: replyId,
-            });
-            lastMessageId = String(result.message_id);
-          }
-        } else {
-          const result = await this.bot.api.sendMessage(msg.chatId, formatted, {
+      lastMessageId = await this.sendTextChunk(msg.chatId, chunk, replyId, markdownToTelegramV2);
+    }
+
+    return lastMessageId;
+  }
+
+  private async sendTextChunk(
+    chatId: string,
+    chunk: string,
+    replyId: number | undefined,
+    markdownToTelegramV2: (markdown: string) => Promise<string>,
+  ): Promise<string> {
+    try {
+      const formatted = await markdownToTelegramV2(chunk);
+      // MarkdownV2 escaping can expand text beyond 4096 - re-split if needed
+      if (formatted.length > TELEGRAM_MAX_LENGTH) {
+        let lastMessageId = '';
+        const subChunks = splitFormattedText(formatted);
+        for (const sub of subChunks) {
+          const result = await this.bot.api.sendMessage(chatId, sub, {
             parse_mode: 'MarkdownV2',
             reply_to_message_id: replyId,
           });
           lastMessageId = String(result.message_id);
         }
-      } catch (e) {
-        // If MarkdownV2 fails, send raw text (also split if needed)
-        console.warn('[Telegram] MarkdownV2 send failed, falling back to raw text:', e);
-        const plainChunks = splitFormattedText(chunk);
-        for (const plain of plainChunks) {
-          const result = await this.bot.api.sendMessage(msg.chatId, plain, {
-            reply_to_message_id: replyId,
-          });
+        return lastMessageId;
+      }
+
+      const result = await this.bot.api.sendMessage(chatId, formatted, {
+        parse_mode: 'MarkdownV2',
+        reply_to_message_id: replyId,
+      });
+      return String(result.message_id);
+    } catch (e) {
+      // If MarkdownV2 fails, send raw text (also split if needed)
+      console.warn('[Telegram] MarkdownV2 send failed, falling back to raw text:', e);
+      let lastMessageId = '';
+      const plainChunks = splitFormattedText(chunk);
+      for (const plain of plainChunks) {
+        const result = await this.bot.api.sendMessage(chatId, plain, {
+          reply_to_message_id: replyId,
+        });
+        lastMessageId = String(result.message_id);
+      }
+      return lastMessageId;
+    }
+  }
+
+  private async sendVoiceChunks(
+    msg: OutboundMessage,
+    chunks: string[],
+    tts: TextToSpeechConfig,
+    fallbackToTextOnFailure: boolean,
+  ): Promise<string> {
+    let lastMessageId = '';
+
+    for (const chunk of chunks) {
+      const spokenText = normalizeTextForSpeech(chunk);
+      if (!spokenText) continue;
+
+      const replyId = fallbackToTextOnFailure && !lastMessageId && msg.replyToMessageId
+        ? Number(msg.replyToMessageId)
+        : undefined;
+
+      try {
+        if (tts.provider === 'google') {
+          const segments = await synthesizeGoogleSpeech(spokenText, tts);
+          // Telegram can play concatenated MP3 frame streams as a single voice note.
+          // This avoids sending multiple per-segment voice messages for one response.
+          const merged = segments.length === 1 ? segments[0] : Buffer.concat(segments);
+          const result = await this.bot.api.sendVoice(
+            msg.chatId,
+            new InputFile(merged, 'response.mp3'),
+            { reply_to_message_id: replyId },
+          );
           lastMessageId = String(result.message_id);
+          continue;
+        }
+
+        const outputFormat = tts.outputFormat || process.env.ELEVENLABS_OUTPUT_FORMAT || 'mp3_44100_128';
+        const sendAsVoiceNote = outputFormat.startsWith('ogg_');
+        const audio = await synthesizeElevenLabsSpeech(spokenText, tts);
+        const result = sendAsVoiceNote
+          ? await this.bot.api.sendVoice(
+            msg.chatId,
+            new InputFile(audio, 'response.ogg'),
+            { reply_to_message_id: replyId },
+          )
+          : await this.bot.api.sendVoice(
+            msg.chatId,
+            new InputFile(audio, 'response.mp3'),
+            { reply_to_message_id: replyId },
+          );
+        lastMessageId = String(result.message_id);
+      } catch (error) {
+        if (tts.provider === 'elevenlabs' && isElevenLabsQuotaError(error)) {
+          console.warn('[Telegram] ElevenLabs quota exceeded, falling back to free Google TTS.');
+          try {
+            const segments = await synthesizeGoogleSpeech(spokenText, { provider: 'google' });
+            const merged = segments.length === 1 ? segments[0] : Buffer.concat(segments);
+            const result = await this.bot.api.sendVoice(
+              msg.chatId,
+              new InputFile(merged, 'response-fallback.mp3'),
+              { reply_to_message_id: replyId },
+            );
+            lastMessageId = String(result.message_id);
+            continue;
+          } catch (fallbackError) {
+            console.error('[Telegram] Google TTS fallback also failed:', fallbackError);
+          }
+        } else {
+          console.error('[Telegram] TTS failed:', error);
+        }
+
+        // In text-and-voice mode we've already sent text, so avoid duplicate replies.
+        if (fallbackToTextOnFailure) {
+          const { markdownToTelegramV2 } = await import('./telegram-format.js');
+          lastMessageId = await this.sendTextChunk(msg.chatId, chunk, replyId, markdownToTelegramV2);
         }
       }
     }
-    
-    return { messageId: lastMessageId };
+
+    return lastMessageId;
   }
 
   async sendFile(file: OutboundFile): Promise<{ messageId: string }> {
@@ -873,4 +996,22 @@ function splitFormattedText(text: string): string[] {
   }
 
   return chunks;
+}
+
+/**
+ * Convert markdown-ish assistant output into plain text for speech synthesis.
+ */
+function normalizeTextForSpeech(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' code block ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[*_~>#]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isElevenLabsQuotaError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return msg.includes('quota_exceeded') || msg.includes('credits remaining');
 }

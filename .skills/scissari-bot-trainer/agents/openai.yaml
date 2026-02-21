@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scissari Bot Trainer"
+  short_description: "Troubleshoot and operate Scissari LettaBot workflows"
+  default_prompt: "Diagnose and fix Scissari LettaBot startup, voice/TTS, model, and responsiveness issues using repo-specific commands."

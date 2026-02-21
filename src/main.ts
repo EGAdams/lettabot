@@ -279,6 +279,7 @@ function createChannelsForAgent(
   agentConfig: import('./config/types.js').AgentConfig,
   attachmentsDir: string,
   attachmentsMaxBytes: number,
+  ttsConfig?: import('./config/types.js').TextToSpeechConfig,
 ): import('./channels/types.js').ChannelAdapter[] {
   const adapters: import('./channels/types.js').ChannelAdapter[] = [];
 
@@ -304,6 +305,7 @@ function createChannelsForAgent(
       attachmentsMaxBytes,
       groups: agentConfig.channels.telegram!.groups,
       mentionPatterns: agentConfig.channels.telegram!.mentionPatterns,
+      tts: ttsConfig,
     }));
   }
 
@@ -575,7 +577,12 @@ async function main() {
     }
 
     // Create and register channels
-    const adapters = createChannelsForAgent(agentConfig, attachmentsDir, globalConfig.attachmentsMaxBytes);
+    const adapters = createChannelsForAgent(
+      agentConfig,
+      attachmentsDir,
+      globalConfig.attachmentsMaxBytes,
+      yamlConfig.tts,
+    );
     for (const adapter of adapters) {
       bot.registerChannel(adapter);
     }

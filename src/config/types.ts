@@ -151,6 +151,9 @@ export interface LettaBotConfig {
   // Transcription (voice messages)
   transcription?: TranscriptionConfig;
 
+  // Text-to-speech (voice replies)
+  tts?: TextToSpeechConfig;
+
   // Attachment handling
   attachments?: {
     maxMB?: number;
@@ -171,6 +174,32 @@ export interface TranscriptionConfig {
   apiKey?: string;     // Falls back to OPENAI_API_KEY env var
   model?: string;      // Defaults to 'whisper-1'
 }
+
+interface BaseTextToSpeechConfig {
+  mode?: 'voice-only' | 'text-and-voice'; // Defaults to 'text-and-voice'
+}
+
+export interface ElevenLabsTextToSpeechConfig extends BaseTextToSpeechConfig {
+  provider: 'elevenlabs';
+  apiKey?: string; // Falls back to ELEVENLABS_API_KEY env var
+  voiceId?: string; // Falls back to ELEVENLABS_VOICE_ID env var, then default
+  model?: string; // Defaults to 'eleven_multilingual_v2'
+  outputFormat?: string; // Defaults to 'mp3_44100_128'
+  voiceSettings?: {
+    stability?: number;
+    similarityBoost?: number;
+    style?: number;
+    useSpeakerBoost?: boolean;
+  };
+}
+
+export interface GoogleTextToSpeechConfig extends BaseTextToSpeechConfig {
+  provider: 'google';
+  language?: string; // Defaults to 'en-US'
+  tld?: string; // Defaults to 'com'
+}
+
+export type TextToSpeechConfig = ElevenLabsTextToSpeechConfig | GoogleTextToSpeechConfig;
 
 export interface PollingYamlConfig {
   enabled?: boolean;      // Master switch (default: auto-detected from sub-configs)

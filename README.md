@@ -132,6 +132,20 @@ export OPENAI_API_KEY=sk-...
 
 If no API key is configured, voice messages are silently ignored.
 
+## Voice Replies (ElevenLabs)
+
+Telegram replies can be synthesized with ElevenLabs text-to-speech.
+
+```yaml
+tts:
+  provider: elevenlabs
+  apiKey: sk_...                    # optional, uses ELEVENLABS_API_KEY
+  voiceId: EXAVITQu4vr4xnSDxMaL     # "Rachel" (female)
+  model: eleven_multilingual_v2
+  outputFormat: mp3_44100_128
+  mode: voice-only                  # or "text-and-voice"
+```
+
 ## Skills
 LettaBot is compatible with [skills.sh](https://skills.sh) and [Clawdhub](https://clawdhub.com/). 
 

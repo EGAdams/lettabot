@@ -1013,6 +1013,7 @@ export class LettaBot implements AgentSession {
       let response = '';
       let lastUpdate = 0; // Start at 0 so the first streaming edit fires immediately
       let messageId: string | null = null;
+      const canEdit = adapter.supportsEditing?.() ?? true;
       let lastMsgType: string | null = null;
       let lastAssistantUuid: string | null = null;
       let sentAnyMessage = false;
@@ -1072,8 +1073,9 @@ export class LettaBot implements AgentSession {
           const preview = JSON.stringify(streamMsg).slice(0, 300);
           console.log(`[Stream] type=${streamMsg.type} ${preview}`);
           
-          // Finalize on type change (avoid double-handling when result provides full response)
-          if (lastMsgType && lastMsgType !== streamMsg.type && response.trim() && streamMsg.type !== 'result') {
+          // Finalize incremental chunks only on channels that support live edits.
+          // Without editing (e.g., Telegram + TTS), flushing here causes one-word fragment messages.
+          if (canEdit && lastMsgType && lastMsgType !== streamMsg.type && response.trim() && streamMsg.type !== 'result') {
             await finalizeMessage();
           }
           
@@ -1107,7 +1109,7 @@ export class LettaBot implements AgentSession {
           if (streamMsg.type === 'assistant') {
             const msgUuid = streamMsg.uuid;
             if (msgUuid && lastAssistantUuid && msgUuid !== lastAssistantUuid) {
-              if (response.trim()) {
+              if (canEdit && response.trim()) {
                 if (!sawNonAssistantSinceLastUuid) {
                   console.warn(`[Stream] WARNING: Assistant UUID changed (${lastAssistantUuid.slice(0, 8)} -> ${msgUuid.slice(0, 8)}) with no visible tool_call/reasoning events between them. Tool call events may have been dropped by SDK transformMessage().`);
                 }
@@ -1125,7 +1127,6 @@ export class LettaBot implements AgentSession {
             
             // Live-edit streaming for channels that support it
             // Hold back streaming edits while response could still be <no-reply/> or <actions> block
-            const canEdit = adapter.supportsEditing?.() ?? true;
             const trimmed = response.trim();
             const mayBeHidden = '<no-reply/>'.startsWith(trimmed)
               || '<actions>'.startsWith(trimmed)

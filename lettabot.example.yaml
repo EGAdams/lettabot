@@ -74,6 +74,15 @@ features:
     intervalMin: 30
     # skipRecentUserMin: 5   # Skip auto-heartbeats for N minutes after user message (0 disables)
 
+# Optional: voice replies (Telegram currently)
+# tts:
+#   provider: elevenlabs
+#   apiKey: sk_...                      # Optional: falls back to ELEVENLABS_API_KEY
+#   voiceId: EXAVITQu4vr4xnSDxMaL       # "Rachel" (female)
+#   model: eleven_multilingual_v2
+#   outputFormat: mp3_44100_128
+#   mode: voice-only                    # "voice-only" | "text-and-voice"
+
 # Attachment handling (defaults to 20MB if omitted)
 # attachments:
 #   maxMB: 20

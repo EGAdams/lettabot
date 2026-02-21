@@ -541,6 +541,20 @@ transcription:
   model: whisper-1     # Default
 ```
 
+## TTS Configuration
+
+Voice replies via ElevenLabs (Telegram currently):
+
+```yaml
+tts:
+  provider: elevenlabs
+  apiKey: sk_...                    # Optional: uses ELEVENLABS_API_KEY env var
+  voiceId: EXAVITQu4vr4xnSDxMaL     # "Rachel" (female)
+  model: eleven_multilingual_v2     # Optional
+  outputFormat: mp3_44100_128       # Optional
+  mode: voice-only                  # "voice-only" | "text-and-voice"
+```
+
 ## Attachments Configuration
 
 ```yaml
@@ -664,6 +678,10 @@ Environment variables override config file values:
 | `WHATSAPP_SELF_CHAT_MODE` | `channels.whatsapp.selfChat` |
 | `SIGNAL_PHONE_NUMBER` | `channels.signal.phone` |
 | `OPENAI_API_KEY` | `transcription.apiKey` |
+| `ELEVENLABS_API_KEY` | `tts.apiKey` |
+| `ELEVENLABS_VOICE_ID` | `tts.voiceId` |
+| `ELEVENLABS_MODEL` | `tts.model` |
+| `ELEVENLABS_OUTPUT_FORMAT` | `tts.outputFormat` |
 | `GMAIL_ACCOUNT` | `polling.gmail.account` (comma-separated list allowed) |
 | `POLLING_INTERVAL_MS` | `polling.intervalMs` |
 

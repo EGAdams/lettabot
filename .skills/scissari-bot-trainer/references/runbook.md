@@ -63,6 +63,46 @@ Fix:
 - Pin `WORKING_DIR=/home/adamsl/lettabot` in startup flow (`start_scissari_bot.sh`).
 - Restart bot from script so runtime and repo session state stay aligned.
 - If needed, one-time sync from `/tmp/lettabot/.letta/settings.local.json` into repo `.letta/`.
+- Verify backend conversation is updating (proves Telegram is synced server-side):
+
+```bash
+curl -s "http://10.0.0.143:8283/v1/conversations/conv-37fd3c38-ebab-455f-ba64-411be48a35a4/messages?limit=20"
+```
+
+- For Letta `0.16.x`, local `/agents/...` UI routes are no longer served from the self-hosted server.
+  - If `http://10.0.0.143:8283/agents/...` returns `{"detail":"Not Found"}`, this is expected.
+  - Open ADE at `https://app.letta.com`, then connect your self-hosted server there.
+- Use the active IDs from `lettabot-agent.json`:
+  - `agent-5955b0c2-7922-4ffe-9e43-b116053b80fa`
+  - `conv-37fd3c38-ebab-455f-ba64-411be48a35a4`
+- Important browser constraint:
+  - `https://app.letta.com` cannot use a remote `http://10.0.0.143:8283` endpoint directly in many browsers.
+  - Use `http://localhost:8283` when opening ADE from the same machine as the Letta server, or expose Letta over `https://` for remote ADE access.
+
+- If ADE is stuck on "Default" conversation and cannot switch:
+  - Letta 0.16.x behavior note:
+    - `resumeSession(agentId)` in stream mode may fail with `Conversation default not found` (SDK path uses explicit `--default`).
+    - Using Letta CLI with `--agent <id>` (no `--default`, no `--conversation`) works and binds to `conversation_id: "default"`.
+  - Bot-side workaround implemented in this repo:
+    - If stored `conversationId` is `"default"`, LettaBot now creates a direct SDK `Session({ agentId })` so CLI runs with `--agent` only.
+  - Set all local state files to `conversationId: "default"`:
+    - `lettabot-agent.json`
+    - `.letta/settings.local.json`
+    - `/tmp/lettabot/.letta/settings.local.json`
+  - Restart LettaBot.
+
+  - Legacy fallback (if needed): pin LettaBot to a specific `conv-*` ID.
+  - Update:
+    - `lettabot-agent.json` -> `agents.LettaBot.conversationId`
+    - `.letta/settings.local.json` -> `sessionsByServer["10.0.0.143:8283"].conversationId` and `lastSession.conversationId`
+    - `/tmp/lettabot/.letta/settings.local.json` with the same value
+  - Restart LettaBot after changing those files.
+
+- Old link format (stale, do not use):
+
+```text
+http://10.0.0.143:8283/agents/agent-5955b0c2-7922-4ffe-9e43-b116053b80fa?conversation=conv-37fd3c38-ebab-455f-ba64-411be48a35a4
+```
 
 ## 3. Duplicate Replies or Repeated Voice Clips
 

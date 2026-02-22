@@ -4,7 +4,7 @@
  * Single agent, single conversation - chat continues across all channels.
  */
 
-import { createAgent, createSession, resumeSession, imageFromFile, imageFromURL, type Session, type MessageContentItem, type SendMessage, type CanUseToolCallback } from '@letta-ai/letta-code-sdk';
+import { createAgent, createSession, resumeSession, Session as LettaSession, imageFromFile, imageFromURL, type MessageContentItem, type SendMessage, type CanUseToolCallback } from '@letta-ai/letta-code-sdk';
 import { mkdirSync } from 'node:fs';
 import type { ChannelAdapter } from '../channels/types.js';
 import type { BotConfig, InboundMessage, TriggerContext } from './types.js';
@@ -139,7 +139,7 @@ export class LettaBot implements AgentSession {
   // Persistent sessions: reuse CLI subprocesses across messages.
   // In shared mode, only the "shared" key is used. In per-channel mode, each
   // channel (and optionally heartbeat) gets its own subprocess.
-  private sessions: Map<string, Session> = new Map();
+  private sessions: Map<string, LettaSession> = new Map();
   private currentCanUseTool: CanUseToolCallback | undefined;
   // Stable callback wrapper so the Session options never change, but we can
   // swap out the per-message handler before each send().
@@ -373,12 +373,12 @@ export class LettaBot implements AgentSession {
    * Return the persistent session for the given conversation key,
    * creating and initializing it if needed.
    */
-  private async ensureSessionForKey(key: string): Promise<Session> {
+  private async ensureSessionForKey(key: string): Promise<LettaSession> {
     const existing = this.sessions.get(key);
     if (existing) return existing;
 
     const opts = this.baseSessionOptions(this.sessionCanUseTool);
-    let session: Session;
+    let session: LettaSession;
 
     // In per-channel mode, look up per-key conversation ID.
     // In shared mode (key === "shared"), use the legacy single conversationId.
@@ -386,7 +386,12 @@ export class LettaBot implements AgentSession {
       ? this.store.conversationId
       : this.store.getConversationId(key);
 
-    if (convId) {
+    if (convId === 'default' && this.store.agentId) {
+      // Letta 0.16.x can fail on explicit --default in stream-json mode.
+      // Use --agent only (no --new/--conversation) to bind default conversation.
+      process.env.LETTA_AGENT_ID = this.store.agentId;
+      session = new LettaSession({ ...opts, agentId: this.store.agentId });
+    } else if (convId) {
       process.env.LETTA_AGENT_ID = this.store.agentId || undefined;
       session = resumeSession(convId, opts);
     } else if (this.store.agentId) {
@@ -426,7 +431,7 @@ export class LettaBot implements AgentSession {
   }
 
   /** Legacy convenience: resolve key from shared/per-channel mode and delegate. */
-  private async ensureSession(): Promise<Session> {
+  private async ensureSession(): Promise<LettaSession> {
     return this.ensureSessionForKey('shared');
   }
 
@@ -471,7 +476,7 @@ export class LettaBot implements AgentSession {
    * Persist conversation ID after a successful session result.
    * Agent ID and first-run setup are handled eagerly in ensureSessionForKey().
    */
-  private persistSessionState(session: Session, convKey?: string): void {
+  private persistSessionState(session: LettaSession, convKey?: string): void {
     // Agent ID already persisted in ensureSessionForKey() on creation.
     // Here we only update if the server returned a different one (shouldn't happen).
     if (session.agentId && session.agentId !== this.store.agentId) {
@@ -506,7 +511,7 @@ export class LettaBot implements AgentSession {
   private async runSession(
     message: SendMessage,
     options: { retried?: boolean; canUseTool?: CanUseToolCallback; convKey?: string } = {},
-  ): Promise<{ session: Session; stream: () => AsyncGenerator<StreamMsg> }> {
+  ): Promise<{ session: LettaSession; stream: () => AsyncGenerator<StreamMsg> }> {
     const { retried = false, canUseTool, convKey = 'shared' } = options;
 
     // Update the per-message callback before sending
@@ -1002,7 +1007,7 @@ export class LettaBot implements AgentSession {
     };
 
     // Run session
-    let session: Session | null = null;
+    let session: LettaSession | null = null;
     try {
       const convKey = this.resolveConversationKey(msg.channel);
       const run = await this.runSession(messageToSend, { retried, canUseTool, convKey });

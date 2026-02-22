@@ -108,22 +108,47 @@ export function printStartupBanner(agents: BannerAgent[]): void {
   // Status lines
   const versionStr = getVersionString();
   const baseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
-  const uiBase = isLettaApiUrl(baseUrl)
-    ? 'https://app.letta.com'
-    : baseUrl.replace(/\/+$/, '');
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
+  const selfHosted = !isLettaApiUrl(baseUrl);
+  const uiBase = 'https://app.letta.com';
+  let isPlainHttpRemote = false;
+  if (selfHosted) {
+    try {
+      const parsed = new URL(normalizedBaseUrl);
+      isPlainHttpRemote =
+        parsed.protocol === 'http:' &&
+        parsed.hostname !== 'localhost' &&
+        parsed.hostname !== '127.0.0.1';
+    } catch {
+      isPlainHttpRemote = false;
+    }
+  }
 
   console.log('');
   console.log(`  Version:  ${versionStr}`);
   for (const agent of agents) {
     const ch = agent.channels.length > 0 ? agent.channels.join(', ') : 'none';
     if (agent.agentId) {
-      const qs = agent.conversationId ? `?conversation=${agent.conversationId}` : '';
-      const url = `${uiBase}/agents/${agent.agentId}${qs}`;
       console.log(`  Agent:    ${agent.name} [${ch}]`);
-      console.log(`  URL:      ${url}`);
+      if (!selfHosted) {
+        const qs = agent.conversationId ? `?conversation=${agent.conversationId}` : '';
+        const url = `${uiBase}/agents/${agent.agentId}${qs}`;
+        console.log(`  URL:      ${url}`);
+      } else {
+        console.log(`  URL:      ${uiBase}`);
+        console.log(`  Server:   ${normalizedBaseUrl}`);
+        console.log(`  Agent ID: ${agent.agentId}`);
+        if (agent.conversationId) {
+          console.log(`  Conv ID:  ${agent.conversationId}`);
+        }
+      }
     } else {
       console.log(`  Agent:    ${agent.name} (pending) [${ch}]`);
     }
+  }
+  if (isPlainHttpRemote) {
+    console.log('  Note:     app.letta.com blocks remote HTTP server URLs.');
+    console.log('            Use https for remote ADE access, or use localhost on this machine.');
   }
 
   const features: string[] = [];

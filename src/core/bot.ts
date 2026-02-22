@@ -10,7 +10,7 @@ import type { ChannelAdapter } from '../channels/types.js';
 import type { BotConfig, InboundMessage, TriggerContext } from './types.js';
 import type { AgentSession } from './interfaces.js';
 import { Store } from './store.js';
-import { updateAgentName, getPendingApprovals, rejectApproval, cancelRuns, recoverOrphanedConversationApproval } from '../tools/letta-api.js';
+import { updateAgentName, getPendingApprovals, rejectApproval, cancelRuns, recoverOrphanedConversationApproval, resetAgentMessages } from '../tools/letta-api.js';
 import { installSkillsToAgent } from '../skills/loader.js';
 import { formatMessageEnvelope, formatGroupBatchEnvelope, type SessionContextOptions } from './formatter.js';
 import type { GroupBatcher } from './group-batcher.js';
@@ -680,34 +680,64 @@ export class LettaBot implements AgentSession {
         });
         return '⏰ Heartbeat triggered (silent mode - check server logs)';
       }
+      case 'new':
       case 'reset': {
         const convKey = channelId ? this.resolveConversationKey(channelId) : undefined;
+        const isNewCommand = command === 'new';
         if (convKey && convKey !== 'shared') {
           // Per-channel mode: only clear the conversation for this channel
           this.store.clearConversation(convKey);
           this.invalidateSession(convKey);
-          console.log(`[Command] /reset - conversation cleared for ${convKey}`);
+          console.log(`[Command] /${command} - conversation cleared for ${convKey}`);
           // Eagerly create the new session so we can report the conversation ID
           try {
             const session = await this.ensureSessionForKey(convKey);
             const newConvId = session.conversationId || '(pending)';
             this.persistSessionState(session, convKey);
-            return `Conversation reset for this channel. New conversation: ${newConvId}\nOther channels are unaffected. (Agent memory is preserved.)`;
+            return `New conversation started for this channel: ${newConvId}\nOther channels are unaffected. (Agent memory is preserved.)`;
           } catch {
-            return `Conversation reset for this channel. Other channels are unaffected. (Agent memory is preserved.)`;
+            return `Started a new conversation for this channel. Other channels are unaffected. (Agent memory is preserved.)`;
           }
         }
+
+        // Shared mode + default conversation alias: reset server-side messages
+        // to keep ADE and Telegram in sync on "Default".
+        if (this.store.conversationId === 'default' && this.store.agentId) {
+          const resetOk = await resetAgentMessages(this.store.agentId, true);
+          if (!resetOk) {
+            return 'Failed to reset Default conversation on Letta server. Try again in a moment.';
+          }
+          this.store.conversationId = 'default';
+          this.store.resetRecoveryAttempts();
+          this.invalidateSession('shared');
+          console.log(`[Command] /${command} - reset default conversation on server`);
+          try {
+            const session = await this.ensureSessionForKey('shared');
+            const conv = session.conversationId || 'default';
+            this.persistSessionState(session, 'shared');
+            return `Started a fresh Default conversation. Active conversation: ${conv}\n(Agent memory is preserved.)`;
+          } catch {
+            return 'Started a fresh Default conversation. (Agent memory is preserved.)';
+          }
+        }
+
         // Shared mode or no channel context: clear everything
         this.store.clearConversation();
         this.store.resetRecoveryAttempts();
         this.invalidateSession();
-        console.log('[Command] /reset - all conversations cleared');
+        console.log(`[Command] /${command} - all conversations cleared`);
         try {
           const session = await this.ensureSessionForKey('shared');
           const newConvId = session.conversationId || '(pending)';
           this.persistSessionState(session, 'shared');
+          if (isNewCommand) {
+            return `Started a new conversation: ${newConvId}\n(Agent memory is preserved.)`;
+          }
           return `Conversation reset. New conversation: ${newConvId}\n(Agent memory is preserved.)`;
         } catch {
+          if (isNewCommand) {
+            return 'Started a new conversation. Send a message to continue. (Agent memory is preserved.)';
+          }
           return 'Conversation reset. Send a message to start a new conversation. (Agent memory is preserved.)';
         }
       }

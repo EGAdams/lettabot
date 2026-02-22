@@ -4,6 +4,13 @@
 
 Use this when startup fails with `EADDRINUSE` on `127.0.0.1:8080`.
 
+Preflight (always verify live services before running fixes):
+
+```bash
+curl -s http://127.0.0.1:8080/health
+curl -s http://10.0.0.143:8283/v1/health/
+```
+
 ```bash
 cd /home/adamsl/lettabot
 ss -ltnp '( sport = :8080 )'
@@ -85,6 +92,9 @@ curl -s "http://10.0.0.143:8283/v1/conversations/conv-37fd3c38-ebab-455f-ba64-41
     - Using Letta CLI with `--agent <id>` (no `--default`, no `--conversation`) works and binds to `conversation_id: "default"`.
   - Bot-side workaround implemented in this repo:
     - If stored `conversationId` is `"default"`, LettaBot now creates a direct SDK `Session({ agentId })` so CLI runs with `--agent` only.
+  - Programmatic fresh-chat command:
+    - Use `/new` (or `/reset`) in Telegram.
+    - In default mode this calls `agents.messages.reset(...)` on Letta and keeps `conversationId: "default"` so ADE/Telegram stay aligned.
   - Set all local state files to `conversationId: "default"`:
     - `lettabot-agent.json`
     - `.letta/settings.local.json`

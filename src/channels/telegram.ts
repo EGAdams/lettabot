@@ -230,6 +230,8 @@ export class TelegramAdapter implements ChannelAdapter {
         "*LettaBot* - AI assistant with persistent memory\n\n" +
         "*Commands:*\n" +
         "/status - Show current status\n" +
+        "/new - Start a fresh conversation\n" +
+        "/reset - Reset conversation\n" +
         "/help - Show this message\n\n" +
         "Just send me a message to get started!",
         { parse_mode: 'Markdown' }
@@ -256,6 +258,14 @@ export class TelegramAdapter implements ChannelAdapter {
       if (this.onCommand) {
         const result = await this.onCommand('reset');
         await ctx.reply(result || 'Reset complete');
+      }
+    });
+
+    // Handle /new
+    this.bot.command('new', async (ctx) => {
+      if (this.onCommand) {
+        const result = await this.onCommand('new');
+        await ctx.reply(result || 'Started a new conversation');
       }
     });
     

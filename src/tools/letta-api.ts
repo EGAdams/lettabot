@@ -240,6 +240,27 @@ export async function findAgentByName(name: string): Promise<{ id: string; name:
   }
 }
 
+/**
+ * Reset an agent's active/default message history.
+ * Useful for starting a fresh conversation while keeping the same agent identity.
+ */
+export async function resetAgentMessages(
+  agentId: string,
+  addDefaultInitialMessages = true
+): Promise<boolean> {
+  try {
+    const client = getClient();
+    await client.agents.messages.reset(agentId, {
+      add_default_initial_messages: addDefaultInitialMessages,
+    });
+    console.log(`[Letta API] Reset messages for agent ${agentId} (add_default_initial_messages=${addDefaultInitialMessages})`);
+    return true;
+  } catch (e) {
+    console.error('[Letta API] Failed to reset agent messages:', e);
+    return false;
+  }
+}
+
 // ============================================================================
 // Tool Approval Management
 // ============================================================================

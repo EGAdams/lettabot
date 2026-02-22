@@ -4,7 +4,7 @@
  * Shared command parsing and help text for all channels.
  */
 
-export const COMMANDS = ['status', 'heartbeat', 'reset', 'help', 'start'] as const;
+export const COMMANDS = ['status', 'heartbeat', 'new', 'reset', 'help', 'start'] as const;
 export type Command = typeof COMMANDS[number];
 
 export const HELP_TEXT = `LettaBot - AI assistant with persistent memory
@@ -12,6 +12,7 @@ export const HELP_TEXT = `LettaBot - AI assistant with persistent memory
 Commands:
 /status - Show current status
 /heartbeat - Trigger heartbeat
+/new - Start a fresh conversation
 /reset - Reset conversation (keeps agent memory)
 /help - Show this message
 

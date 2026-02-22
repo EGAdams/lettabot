@@ -11,6 +11,10 @@ describe('parseCommand', () => {
       expect(parseCommand('/heartbeat')).toBe('heartbeat');
     });
 
+    it('returns "new" for /new', () => {
+      expect(parseCommand('/new')).toBe('new');
+    });
+
     it('returns "help" for /help', () => {
       expect(parseCommand('/help')).toBe('help');
     });
@@ -68,14 +72,15 @@ describe('COMMANDS', () => {
   it('contains all expected commands', () => {
     expect(COMMANDS).toContain('status');
     expect(COMMANDS).toContain('heartbeat');
+    expect(COMMANDS).toContain('new');
     expect(COMMANDS).toContain('reset');
     expect(COMMANDS).toContain('help');
     expect(COMMANDS).toContain('start');
     expect(COMMANDS).toContain('reset');
   });
 
-  it('has exactly 5 commands', () => {
-    expect(COMMANDS).toHaveLength(5);
+  it('has exactly 6 commands', () => {
+    expect(COMMANDS).toHaveLength(6);
   });
 });
 
@@ -83,6 +88,7 @@ describe('HELP_TEXT', () => {
   it('contains command descriptions', () => {
     expect(HELP_TEXT).toContain('/status');
     expect(HELP_TEXT).toContain('/heartbeat');
+    expect(HELP_TEXT).toContain('/new');
     expect(HELP_TEXT).toContain('/help');
   });
 

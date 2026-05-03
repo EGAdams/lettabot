@@ -45,16 +45,24 @@ if [[ ! -f "dist/main.js" ]]; then
   npm run build
 fi
 
-# If 8080 is already used by this same bot, stop the stale instance first.
-LISTEN_PID="$(lsof -tiTCP:8080 -sTCP:LISTEN || true)"
+# Resolve API port (priority: env override, then lettabot.yaml, then default).
+LETTABOT_API_PORT="${LETTABOT_API_PORT:-$(
+  grep -E '^[[:space:]]*port:[[:space:]]*[0-9]+' "lettabot.yaml" \
+    | head -n 1 \
+    | sed -E 's/.*port:[[:space:]]*([0-9]+).*/\1/'
+)}"
+LETTABOT_API_PORT="${LETTABOT_API_PORT:-8080}"
+
+# If the configured port is already used by this same bot, stop the stale instance first.
+LISTEN_PID="$(lsof -tiTCP:${LETTABOT_API_PORT} -sTCP:LISTEN || true)"
 if [[ -n "${LISTEN_PID}" ]]; then
   CMDLINE="$(tr '\0' ' ' <"/proc/${LISTEN_PID}/cmdline" 2>/dev/null || true)"
   if [[ "${CMDLINE}" == *"/home/adamsl/lettabot/dist/main.js"* ]]; then
-    echo "Stopping stale Scissari instance on port 8080 (PID ${LISTEN_PID})..."
+    echo "Stopping stale Scissari instance on port ${LETTABOT_API_PORT} (PID ${LISTEN_PID})..."
     kill "${LISTEN_PID}" || true
     sleep 1
   else
-    echo "Error: port 8080 is in use by PID ${LISTEN_PID} (${CMDLINE})."
+    echo "Error: port ${LETTABOT_API_PORT} is in use by PID ${LISTEN_PID} (${CMDLINE})."
     echo "       Stop that process or change lettabot server.api.port."
     exit 1
   fi

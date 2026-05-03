@@ -625,7 +625,9 @@ This code expires in 1 hour.`;
         try {
           const { loadConfig } = await import('../config/index.js');
           const config = loadConfig();
-          if (!config.transcription?.apiKey && !process.env.OPENAI_API_KEY) {
+          const transcriptionProvider = config.transcription?.provider || 'openai';
+          const needsOpenAIKey = transcriptionProvider !== 'whispercpp';
+          if (needsOpenAIKey && !config.transcription?.apiKey && !process.env.OPENAI_API_KEY) {
             if (chatId) {
               const audioInfo = savedAudioPath ? ` Audio saved to: ${savedAudioPath}` : '';
               await this.sendMessage({ 

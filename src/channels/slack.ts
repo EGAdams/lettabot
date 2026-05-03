@@ -76,7 +76,9 @@ export class SlackAdapter implements ChannelAdapter {
         try {
           const { loadConfig } = await import('../config/index.js');
           const config = loadConfig();
-          if (!config.transcription?.apiKey && !process.env.OPENAI_API_KEY) {
+          const transcriptionProvider = config.transcription?.provider || 'openai';
+          const needsOpenAIKey = transcriptionProvider !== 'whispercpp';
+          if (needsOpenAIKey && !config.transcription?.apiKey && !process.env.OPENAI_API_KEY) {
             await say('Voice messages require OpenAI API key for transcription. See: https://github.com/letta-ai/lettabot#voice-messages');
           } else {
             // Download file (requires bot token for auth)

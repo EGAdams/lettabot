@@ -361,7 +361,14 @@ export class TelegramAdapter implements ChannelAdapter {
       // Check if transcription is configured (config or env)
       const { loadConfig } = await import('../config/index.js');
       const config = loadConfig();
-      if (!config.transcription?.apiKey && !process.env.OPENAI_API_KEY) {
+      const transcriptionEnabled = config.transcription?.enabled ?? true;
+      const transcriptionProvider = config.transcription?.provider || 'openai';
+      const needsOpenAIKey = transcriptionProvider !== 'whispercpp';
+      if (!transcriptionEnabled) {
+        await ctx.reply('Voice transcription is currently disabled.');
+        return;
+      }
+      if (needsOpenAIKey && !config.transcription?.apiKey && !process.env.OPENAI_API_KEY) {
         await ctx.reply('Voice messages require OpenAI API key for transcription. See: https://github.com/letta-ai/lettabot#voice-messages');
         return;
       }
@@ -386,7 +393,14 @@ export class TelegramAdapter implements ChannelAdapter {
           messageText = `[Voice message]: ${result.text}`;
         } else {
           console.error(`[Telegram] Transcription failed: ${result.error}`);
-          messageText = `[Voice message - transcription failed: ${result.error}]`;
+          const err = result.error || 'unknown transcription error';
+          const lower = err.toLowerCase();
+          if (lower.includes('429') || lower.includes('quota') || lower.includes('billing')) {
+            await ctx.reply('Voice transcription is temporarily unavailable (OpenAI quota/billing issue). Please send text for now.');
+          } else {
+            await ctx.reply(`Voice transcription failed: ${err}`);
+          }
+          return;
         }
 
         // Send to agent
@@ -407,22 +421,9 @@ export class TelegramAdapter implements ChannelAdapter {
         }
       } catch (error) {
         console.error('[Telegram] Error processing voice message:', error);
-        // Send error to agent so it can explain
-        if (this.onMessage) {
-          await this.onMessage({
-            channel: 'telegram',
-            chatId: String(chatId),
-            userId: String(userId),
-            userName: ctx.from?.username || ctx.from?.first_name,
-            messageId: String(ctx.message.message_id),
-            text: `[Voice message - error: ${error instanceof Error ? error.message : 'unknown error'}]`,
-            timestamp: new Date(),
-            isGroup,
-            groupName,
-            wasMentioned,
-            isListeningMode,
-          });
-        }
+        await ctx.reply(
+          `Voice message processing error: ${error instanceof Error ? error.message : 'unknown error'}`,
+        );
       }
     });
 

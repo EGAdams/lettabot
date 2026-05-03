@@ -197,6 +197,8 @@ Commands:
   channels list        Show channel status
   channels add <ch>    Add a channel (telegram, slack, discord, whatsapp, signal)
   channels remove <ch> Remove a channel
+  connect codex        Connect ChatGPT Plus/Pro via OAuth (enables gpt-5.2-codex model)
+  disconnect codex     Remove ChatGPT OAuth provider
   logout               Logout from Letta Platform (revoke OAuth tokens)
   skills               Configure which skills are enabled
   skills status        Show skills status
@@ -216,6 +218,7 @@ Examples:
   lettabot onboard                           # First-time setup
   lettabot server                            # Start the bot
   lettabot channels                          # Interactive channel management
+  lettabot connect codex                     # Connect ChatGPT Plus/Pro OAuth
   lettabot channels add discord              # Add Discord integration
   lettabot channels remove telegram          # Remove Telegram
   lettabot todo add "Deliver morning report" --recurring "daily 8am"
@@ -503,6 +506,18 @@ async function main() {
       break;
     }
       
+    case 'connect': {
+      const { connectCommand } = await import('./commands/connect.js');
+      await connectCommand(subCommand);
+      break;
+    }
+
+    case 'disconnect': {
+      const { disconnectCommand } = await import('./commands/connect.js');
+      await disconnectCommand(subCommand);
+      break;
+    }
+
     case 'logout': {
       const { revokeToken } = await import('./auth/oauth.js');
       const { loadTokens, deleteTokens } = await import('./auth/tokens.js');

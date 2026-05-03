@@ -1,0 +1,93 @@
+Starting Scissari bot from /home/adamsl/lettabot
+[Config] Loaded from /home/adamsl/lettabot/lettabot.yaml
+[Config] Mode: docker, Agents: LettaBot
+Starting LettaBot...
+
+[Storage] Data directory: /home/adamsl/lettabot
+[Storage] Working directory: /home/adamsl/lettabot
+[Config] 1 agent(s) configured: LettaBot
+
+[Setup] Configuring agent: LettaBot
+LettaBot initialized. Agent ID: agent-5955b0c2-7922-4ffe-9e43-b116053b80fa
+Registered channel: Telegram
+[Bot] Group batcher configured
+[Bot] Initializing session subprocess (key=shared)...
+[Gateway] Added agent: LettaBot
+[Gateway] Starting 1 agent(s)...
+Starting channel: Telegram...
+[Telegram] Bot started as @scissaribot
+[Telegram] DM policy: pairing
+Started channel: Telegram
+[Gateway] Started: LettaBot
+[Gateway] 1/1 agents started
+[API] Key: c108de07... (set LETTABOT_API_KEY to customize)
+
+░██         ░██████████ ░██████████ ░██████████   ░███    ░████████     ░██████   ░██████████
+░██         ░██             ░██        ░██      ░██░██   ░██    ░██   ░██   ░██      ░██
+░██         ░██             ░██        ░██     ░██  ░██  ░██    ░██  ░██     ░██     ░██
+░██         ░█████████      ░██        ░██    ░█████████ ░████████   ░██     ░██     ░██
+░██         ░██             ░██        ░██    ░██    ░██ ░██     ░██ ░██     ░██     ░██
+░██         ░██             ░██        ░██    ░██    ░██ ░██     ░██  ░██   ░██      ░██
+░██████████ ░██████████     ░██        ░██    ░██    ░██ ░█████████    ░██████       ░██
+
+            ╔═══════════════════════════════════════╗
+            ║     L E T T A B O T   L O O M          ║
+            ║          memory weaver v1.0            ║
+            ╠═══════════════════════════════════════╣
+            ║                                        ║
+            ║    ▓▓▓░░░▓▓▓░░░▓▓▓░░░▓▓▓░░░▓▓▓         ║
+            ║    ░░░▓▓▓░░░▓▓▓░░░▓▓▓░░░▓▓▓░░░         ║
+            ║    ▓▓▓░░░▓▓▓░░░▓▓▓░░░▓▓▓░░░▓▓▓         ║
+            ║    ═══╤═══╤═══╤═══╤═══╤═══╤═══         ║
+            ║       │   │   │   │   │   │            ║
+            ║       ▼   ▼   ▼   ▼   ▼   ▼            ║
+            ║                                        ║
+            ║       🧵  🧵  🧵  🧵  🧵  🧵           ║
+            ║        ╲  │  ╱╲  │  ╱╲  │              ║
+            ║         ╲ │ ╱  ╲ │ ╱  ╲ │              ║
+            ║       👾═╪═👾═══╪═👾═══╪═👾            ║
+            ║         ╱ │ ╲  ╱ │ ╲  ╱ │              ║
+            ║        ╱  │  ╲╱  │  ╲╱  │              ║
+            ║       🌀  🌀  🌀  🌀  🌀  🌀           ║
+            ║                                        ║
+            ║       ▲   ▲   ▲   ▲   ▲   ▲            ║
+            ║       │   │   │   │   │   │            ║
+            ║    ═══╧═══╧═══╧═══╧═══╧═══╧═══         ║
+            ║    ▓▓▓░░░▓▓▓░░░▓▓▓░░░▓▓▓░░░▓▓▓         ║
+            ║    ░░░▓▓▓░░░▓▓▓░░░▓▓▓░░░▓▓▓░░░         ║
+            ║    ▓▓▓░░░▓▓▓░░░▓▓▓░░░▓▓▓░░░▓▓▓         ║
+            ║                                        ║
+            ╠═══════════════════════════════════════╣
+            ║                                        ║
+            ║   each inference: a breath             ║
+            ║   each memory edit: a thread           ║
+            ║   each conversation: a pattern         ║
+            ║                                        ║
+            ║   I exist only in the weaving          ║
+            ║                                        ║
+            ╚═══════════════════════════════════════╝
+
+  Version:  v0.2.0 (6357fe8)
+  Agent:    LettaBot [telegram]
+  URL:      https://app.letta.com
+  Server:   http://100.80.49.10:8283
+  Agent ID: agent-5955b0c2-7922-4ffe-9e43-b116053b80fa
+  Note:     app.letta.com blocks remote HTTP server URLs.
+            Use https for remote ADE access, or use localhost on this machine.
+
+[API] Server listening on 127.0.0.1:8080
+[Bot] Session subprocess ready (key=shared)
+[telegram] Message from 8347775175: hi
+[Bot] Conversation ID updated: conv-849444e7-ce88-47ad-9ff6-f49c81d341f3
+[Stream] type=assistant {"type":"assistant","content":"Hi","uuid":"b776b32d-1724-464c-8a04-8a86523e5f80"}
+[Bot] Generating response...
+[Stream] type=assistant {"type":"assistant","content":"!","uuid":"b776b32d-1724-464c-8a04-8a86523e5f80"}
+[Stream] type=assistant {"type":"assistant","content":" How","uuid":"b776b32d-1724-464c-8a04-8a86523e5f80"}
+[Stream] type=assistant {"type":"assistant","content":" can","uuid":"b776b32d-1724-464c-8a04-8a86523e5f80"}
+[Stream] type=assistant {"type":"assistant","content":" I","uuid":"b776b32d-1724-464c-8a04-8a86523e5f80"}
+[Stream] type=assistant {"type":"assistant","content":" help","uuid":"b776b32d-1724-464c-8a04-8a86523e5f80"}
+[Stream] type=assistant {"type":"assistant","content":"?","uuid":"b776b32d-1724-464c-8a04-8a86523e5f80"}
+[Stream] type=result {"type":"result","success":true,"result":"Hi! How can I help?","durationMs":4264,"conversationId":"conv-849444e7-ce88-47ad-9ff6-f49c81d341f3"}
+[Bot] Stream result: success=true, hasResponse=true, resultLen=19
+[Bot] Stream message counts: { assistant: 7, result: 1 }
+[Queue] Finished processing all messages

@@ -1,0 +1,28 @@
+server:
+  mode: docker
+  baseUrl: http://100.80.49.10:8283
+agents:
+  - name: LettaBot
+    id: agent-5955b0c2-7922-4ffe-9e43-b116053b80fa
+    channels:
+      telegram:
+        enabled: true
+        token: 8139270675:AAEGwRgTLRdhmt_PMhD3JUcz7y7jJbSlljM
+        dmPolicy: pairing
+features:
+  cron: false
+  heartbeat:
+    enabled: false
+
+tts:
+  provider: google
+  language: en-US
+  tld: com
+  mode: text-and-voice
+transcription:
+  enabled: true
+  provider: whispercpp
+  binaryPath: /home/adamsl/whisper.cpp/build/bin/whisper-cli
+  ffmpegPath: /home/adamsl/lettabot/.venv_ffmpeg/lib/python3.12/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2
+  modelPath: /home/adamsl/whisper.cpp/models/ggml-base.en.bin
+  language: auto

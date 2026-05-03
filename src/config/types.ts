@@ -169,11 +169,28 @@ export interface LettaBotConfig {
   };
 }
 
-export interface TranscriptionConfig {
-  provider: 'openai';  // Only OpenAI supported currently
-  apiKey?: string;     // Falls back to OPENAI_API_KEY env var
-  model?: string;      // Defaults to 'whisper-1'
+interface BaseTranscriptionConfig {
+  enabled?: boolean; // Defaults to true when config is present
+  model?: string;
+  apiKey?: string;
 }
+
+export interface OpenAITranscriptionConfig extends BaseTranscriptionConfig {
+  provider: 'openai';
+}
+
+export interface WhisperCppTranscriptionConfig extends BaseTranscriptionConfig {
+  provider: 'whispercpp';
+  binaryPath?: string;
+  ffmpegPath?: string;
+  modelPath?: string;
+  language?: string;
+  threads?: number;
+}
+
+export type TranscriptionConfig =
+  | OpenAITranscriptionConfig
+  | WhisperCppTranscriptionConfig;
 
 interface BaseTextToSpeechConfig {
   mode?: 'voice-only' | 'text-and-voice'; // Defaults to 'text-and-voice'

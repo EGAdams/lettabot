@@ -1,7 +1,20 @@
 /**
  * Transcription service
- * 
- * Currently supports OpenAI Whisper. Future providers can be added here.
  */
 
-export { transcribeAudio, type TranscriptionResult } from './openai.js';
+import { loadConfig } from '../config/index.js';
+import { transcribeAudio as transcribeOpenAI } from './openai.js';
+import { transcribeAudio as transcribeWhisperCpp } from './whispercpp.js';
+export type { TranscriptionResult } from './openai.js';
+
+export async function transcribeAudio(
+  audioBuffer: Buffer,
+  filename = 'audio.ogg',
+  options?: { audioPath?: string },
+) {
+  const provider = loadConfig().transcription?.provider || 'openai';
+  if (provider === 'whispercpp') {
+    return transcribeWhisperCpp(audioBuffer, filename, options);
+  }
+  return transcribeOpenAI(audioBuffer, filename, options);
+}

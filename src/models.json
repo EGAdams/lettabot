@@ -29,6 +29,13 @@
     "isFeatured": true
   },
   {
+    "id": "gpt-5.2-codex-plus-pro-medium",
+    "handle": "chatgpt-plus-pro/gpt-5.2-codex",
+    "label": "GPT-5.2 Codex",
+    "description": "GPT-5.2 Codex via ChatGPT Plus/Pro OAuth (med reasoning)",
+    "isFeatured": true
+  },
+  {
     "id": "gemini-3",
     "handle": "google_ai/gemini-3-pro-preview",
     "label": "Gemini 3 Pro",

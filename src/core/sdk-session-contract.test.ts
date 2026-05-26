@@ -164,4 +164,120 @@ describe('SDK session contract', () => {
     expect(secondSession.close).toHaveBeenCalledTimes(1);
     expect(vi.mocked(createSession)).toHaveBeenCalledTimes(2);
   });
+
+  it('prefers terminal result text over pre-tool assistant scaffolding', async () => {
+    const mockSession = {
+      initialize: vi.fn(async () => undefined),
+      send: vi.fn(async (_message: unknown) => undefined),
+      stream: vi.fn(() =>
+        (async function* () {
+          yield { type: 'assistant', content: 'I will call the tool now.' };
+          yield { type: 'result', success: true, result: 'Final tool answer.' };
+        })()
+      ),
+      close: vi.fn(() => undefined),
+      agentId: 'agent-contract-test',
+      conversationId: 'conversation-contract-test',
+    };
+
+    vi.mocked(createSession).mockReturnValue(mockSession as never);
+    vi.mocked(resumeSession).mockReturnValue(mockSession as never);
+
+    const bot = new LettaBot({
+      workingDir: join(dataDir, 'working'),
+      allowedTools: [],
+    });
+
+    const response = await bot.sendToAgent('test');
+    expect(response).toBe('Final tool answer.');
+  });
+
+  it('suppresses tool-planning assistant text when no terminal answer is provided', async () => {
+    const mockSession = {
+      initialize: vi.fn(async () => undefined),
+      send: vi.fn(async (_message: unknown) => undefined),
+      stream: vi.fn(() =>
+        (async function* () {
+          yield { type: 'assistant', content: 'I will call the relay_message_to_chatgpt tool now.' };
+          yield { type: 'result', success: true, result: '' };
+        })()
+      ),
+      close: vi.fn(() => undefined),
+      agentId: 'agent-contract-test',
+      conversationId: 'conversation-contract-test',
+    };
+
+    vi.mocked(createSession).mockReturnValue(mockSession as never);
+    vi.mocked(resumeSession).mockReturnValue(mockSession as never);
+
+    const bot = new LettaBot({
+      workingDir: join(dataDir, 'working'),
+      allowedTools: [],
+    });
+
+    const response = await bot.sendToAgent('test');
+    expect(response).toBe('');
+  });
+
+  it('suppresses assistant text in "using the tool" meta format', async () => {
+    const mockSession = {
+      initialize: vi.fn(async () => undefined),
+      send: vi.fn(async (_message: unknown) => undefined),
+      stream: vi.fn(() =>
+        (async function* () {
+          yield {
+            type: 'assistant',
+            content:
+              '**Using the tool for user request**\n\nI need to call relay_message_to_chatgpt before I can answer.',
+          };
+          yield { type: 'result', success: true, result: '' };
+        })()
+      ),
+      close: vi.fn(() => undefined),
+      agentId: 'agent-contract-test',
+      conversationId: 'conversation-contract-test',
+    };
+
+    vi.mocked(createSession).mockReturnValue(mockSession as never);
+    vi.mocked(resumeSession).mockReturnValue(mockSession as never);
+
+    const bot = new LettaBot({
+      workingDir: join(dataDir, 'working'),
+      allowedTools: [],
+    });
+
+    const response = await bot.sendToAgent('test');
+    expect(response).toBe('');
+  });
+
+  it('suppresses assistant text that mentions internal relay tool execution', async () => {
+    const mockSession = {
+      initialize: vi.fn(async () => undefined),
+      send: vi.fn(async (_message: unknown) => undefined),
+      stream: vi.fn(() =>
+        (async function* () {
+          yield {
+            type: 'assistant',
+            content:
+              '**Handling user requests**\n\nI should call relay_message_to_chatgpt now. Let’s proceed with the tool call!',
+          };
+          yield { type: 'result', success: true, result: '' };
+        })()
+      ),
+      close: vi.fn(() => undefined),
+      agentId: 'agent-contract-test',
+      conversationId: 'conversation-contract-test',
+    };
+
+    vi.mocked(createSession).mockReturnValue(mockSession as never);
+    vi.mocked(resumeSession).mockReturnValue(mockSession as never);
+
+    const bot = new LettaBot({
+      workingDir: join(dataDir, 'working'),
+      allowedTools: [],
+    });
+
+    const response = await bot.sendToAgent('test');
+    expect(response).toBe('');
+  });
 });

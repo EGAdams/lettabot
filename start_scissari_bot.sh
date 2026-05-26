@@ -5,6 +5,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+LOCAL_LETTA_CODE_DIR="${LOCAL_LETTA_CODE_DIR:-/home/adamsl/letta-code}"
+LOCAL_LETTA_CLI_PATH="${LOCAL_LETTA_CLI_PATH:-$LOCAL_LETTA_CODE_DIR/letta.js}"
+
 # Keep runtime working dir aligned with repo so ADE/session state is not split
 # between /tmp/lettabot and this project.
 export WORKING_DIR="${WORKING_DIR:-$SCRIPT_DIR}"
@@ -39,6 +42,14 @@ fi
 
 echo "Starting Scissari bot from $SCRIPT_DIR"
 
+# The npm-published letta-code-sdk bundled here still resolves an older
+# @letta-ai/letta-code CLI by default. Pin the SDK to the local checkout so
+# Scissari gets the current multi-agent fallback and approval recovery logic.
+if [[ -z "${LETTA_CLI_PATH:-}" && -f "$LOCAL_LETTA_CLI_PATH" ]]; then
+  export LETTA_CLI_PATH="$LOCAL_LETTA_CLI_PATH"
+  echo "Using local Letta CLI: $LETTA_CLI_PATH"
+fi
+
 # Ensure built output exists (this script now runs local code directly).
 if [[ ! -f "dist/main.js" ]]; then
   echo "dist/main.js not found. Building..."
@@ -57,7 +68,7 @@ LETTABOT_API_PORT="${LETTABOT_API_PORT:-8080}"
 LISTEN_PID="$(lsof -tiTCP:${LETTABOT_API_PORT} -sTCP:LISTEN || true)"
 if [[ -n "${LISTEN_PID}" ]]; then
   CMDLINE="$(tr '\0' ' ' <"/proc/${LISTEN_PID}/cmdline" 2>/dev/null || true)"
-  if [[ "${CMDLINE}" == *"/home/adamsl/lettabot/dist/main.js"* ]]; then
+  if [[ "${CMDLINE}" == *"$SCRIPT_DIR/dist/main.js"* ]]; then
     echo "Stopping stale Scissari instance on port ${LETTABOT_API_PORT} (PID ${LISTEN_PID})..."
     kill "${LISTEN_PID}" || true
     sleep 1

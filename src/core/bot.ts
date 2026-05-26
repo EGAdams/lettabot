@@ -6,6 +6,7 @@
 
 import { createAgent, createSession, resumeSession, Session as LettaSession, imageFromFile, imageFromURL, type MessageContentItem, type SendMessage, type CanUseToolCallback } from '@letta-ai/letta-code-sdk';
 import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { ChannelAdapter } from '../channels/types.js';
 import type { BotConfig, InboundMessage, TriggerContext } from './types.js';
 import type { AgentSession } from './interfaces.js';
@@ -19,12 +20,36 @@ import { SYSTEM_PROMPT } from './system-prompt.js';
 import { parseDirectives, stripActionsBlock, type Directive } from './directives.js';
 import { createManageTodoTool } from '../tools/todo.js';
 import { syncTodosFromTool } from '../todo/store.js';
+import { executePendingMultiAgentToolCall, type PendingMultiAgentToolCall } from './multi-agent-fallback.js';
+import { executeChatGptRelayFallback } from './chatgpt-relay-fallback.js';
+import { ThoughtBroadcaster } from './thought-broadcaster.js';
 
 
 /**
+ * Detect if a 409 error means the conversation is busy (another request in flight).
+ * These should be retried with a delay, not treated as approval conflicts.
+ */
+function isConversationBusyError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    if (msg.includes('is currently being processed')) return true;
+    if (msg.includes('conversation is busy')) return true;
+  }
+  // Also check nested SDK error body
+  const apiErr = error as { status?: number; error?: { detail?: string; message?: string } };
+  if (apiErr?.status === 409) {
+    const detail = (apiErr.error?.detail ?? apiErr.error?.message ?? '').toLowerCase();
+    if (detail.includes('is currently being processed')) return true;
+  }
+  return false;
+}
+
+/**
  * Detect if an error is a 409 CONFLICT from an orphaned approval.
+ * Explicitly excludes "conversation busy" 409s — those need wait-and-retry, not recovery.
  */
 function isApprovalConflictError(error: unknown): boolean {
+  if (isConversationBusyError(error)) return false;
   if (error instanceof Error) {
     const msg = error.message.toLowerCase();
     if (msg.includes('waiting for approval')) return true;
@@ -49,6 +74,71 @@ function isConversationMissingError(error: unknown): boolean {
   }
   const statusError = error as { status?: number };
   if (statusError?.status === 404) return true;
+  return false;
+}
+
+function normalizeResponseText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function isMetaOnlyResponse(text: string): boolean {
+  const normalized = normalizeResponseText(text);
+  if (!normalized) return true;
+  const metaPrefixes = [
+    '**considering ',
+    'considering ',
+    '**exploring ',
+    'exploring ',
+    '**planning ',
+    'planning ',
+    '**processing user request**',
+    'processing user request',
+    '**using the tool for user request**',
+    'using the tool for user request',
+    '**using the tool',
+    'using the tool',
+    '**examining skill tool usage**',
+    'examining skill tool usage',
+    'i’m thinking about',
+    "i'm thinking about",
+    'i need to ',
+    'i should ',
+    'i will ',
+    "i'll ",
+    'let me ',
+    'working on it',
+    'i see i need to check for any available skills',
+  ];
+  if (
+    metaPrefixes.some((prefix) => normalized.startsWith(prefix))
+  ) {
+    return true;
+  }
+
+  // For this bot role, any mention of internal relay-tool execution is
+  // planning/meta text, not a user-facing answer.
+  const internalToolMarkers = [
+    'relay_message_to_chatgpt',
+    'tool call',
+    'call that tool',
+    'call the tool',
+    'use the tool',
+  ];
+  if (internalToolMarkers.some((marker) => normalized.includes(marker))) {
+    return true;
+  }
+
+  const metaPatterns: RegExp[] = [
+    /\b(i|we)\s+(will|would|can|should|need to|am going to|gonna)\s+(use|call|run|invoke|check|search|look up)\b/,
+    /\b(let me|i'll)\s+(use|call|run|invoke|check|search|look up)\b/,
+    /\b(call|use|run|invoke)\s+the\s+[\w-]+\s+tool\b/,
+    /\busing\s+the\s+tool\b/,
+    /\busing\s+the\s+[\w-]+\s+tool\b/,
+  ];
+  if (metaPatterns.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+
   return false;
 }
 
@@ -105,12 +195,73 @@ export interface StreamMsg {
   content?: string;
   toolCallId?: string;
   toolName?: string;
+  toolInput?: unknown;
   uuid?: string;
   isError?: boolean;
   result?: string;
   success?: boolean;
   error?: string;
   [key: string]: unknown;
+}
+
+type PendingServerToolCall = {
+  toolName: string;
+  toolArgs: string;
+  lastSignature?: string;
+};
+
+function appendToolArgFragment(
+  pending: Map<string, PendingServerToolCall>,
+  streamMsg: StreamMsg,
+): void {
+  if (streamMsg.type !== 'tool_call' || !streamMsg.toolCallId) return;
+
+  const existing = pending.get(streamMsg.toolCallId) || {
+    toolName: '',
+    toolArgs: '',
+  };
+
+  if (typeof streamMsg.toolName === 'string' && streamMsg.toolName) {
+    existing.toolName = streamMsg.toolName;
+  }
+
+  const input = streamMsg.toolInput;
+  let fragment = '';
+  if (
+    input &&
+    typeof input === 'object' &&
+    'raw' in input &&
+    typeof (input as { raw?: unknown }).raw === 'string'
+  ) {
+    fragment = (input as { raw: string }).raw;
+  } else if (typeof input === 'string') {
+    fragment = input;
+  } else if (typeof input === 'number' || typeof input === 'boolean') {
+    fragment = String(input);
+  } else if (
+    input &&
+    typeof input === 'object' &&
+    Object.keys(input as Record<string, unknown>).length > 0 &&
+    !('raw' in (input as Record<string, unknown>))
+  ) {
+    fragment = JSON.stringify(input);
+  }
+
+  if (fragment) {
+    const normalizedFragment = fragment.trim();
+    if (
+      existing.toolArgs &&
+      normalizedFragment.length >= existing.toolArgs.length &&
+      normalizedFragment.startsWith(existing.toolArgs)
+    ) {
+      // Newer CLI builds may stream cumulative JSON argument snapshots.
+      existing.toolArgs = normalizedFragment;
+    } else {
+      existing.toolArgs += fragment;
+    }
+  }
+
+  pending.set(streamMsg.toolCallId, existing);
 }
 
 export function isResponseDeliverySuppressed(msg: Pick<InboundMessage, 'isListeningMode'>): boolean {
@@ -259,7 +410,15 @@ export class LettaBot implements AgentSession {
         'TodoWrite',
         ...(this.config.disallowedTools || []),
       ],
-      cwd: this.config.workingDir,
+      // Use the letta-code repo directory as CWD so the subprocess discovers
+      // skills from .skills/ inside that repo (not from lettabot's workingDir,
+      // which has no .skills/ directory). Precedence:
+      //   1. LETTA_SESSION_CWD (explicit override)
+      //   2. dirname(LETTA_CLI_PATH) when pointing at a local checkout
+      //   3. this.config.workingDir (fallback)
+      cwd: process.env.LETTA_SESSION_CWD
+        || (process.env.LETTA_CLI_PATH ? dirname(process.env.LETTA_CLI_PATH) : null)
+        || this.config.workingDir,
       tools: [createManageTodoTool(this.getTodoAgentKey())],
       // In bypassPermissions mode, canUseTool is only called for interactive
       // tools (AskUserQuestion, ExitPlanMode). When no callback is provided
@@ -475,25 +634,31 @@ export class LettaBot implements AgentSession {
   /**
    * Persist conversation ID after a successful session result.
    * Agent ID and first-run setup are handled eagerly in ensureSessionForKey().
+   *
+   * fallbackConvId: use when session.conversationId is null because the CLI emits
+   * conversation_id in result messages but not in the init message for new sessions.
    */
-  private persistSessionState(session: LettaSession, convKey?: string): void {
+  private persistSessionState(session: LettaSession, convKey?: string, fallbackConvId?: string): void {
     // Agent ID already persisted in ensureSessionForKey() on creation.
     // Here we only update if the server returned a different one (shouldn't happen).
     if (session.agentId && session.agentId !== this.store.agentId) {
       const currentBaseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
-      this.store.setAgent(session.agentId, currentBaseUrl, session.conversationId || undefined);
+      this.store.setAgent(session.agentId, currentBaseUrl, session.conversationId || fallbackConvId || undefined);
       console.log('[Bot] Agent ID updated:', session.agentId);
-    } else if (session.conversationId) {
-      // In per-channel mode, persist per-key. In shared mode, use legacy field.
-      if (convKey && convKey !== 'shared') {
-        const existing = this.store.getConversationId(convKey);
-        if (session.conversationId !== existing) {
-          this.store.setConversationId(convKey, session.conversationId);
-          console.log(`[Bot] Conversation ID updated (key=${convKey}):`, session.conversationId);
+    } else {
+      const effectiveConvId = session.conversationId || fallbackConvId || null;
+      if (effectiveConvId) {
+        // In per-channel mode, persist per-key. In shared mode, use legacy field.
+        if (convKey && convKey !== 'shared') {
+          const existing = this.store.getConversationId(convKey);
+          if (effectiveConvId !== existing) {
+            this.store.setConversationId(convKey, effectiveConvId);
+            console.log(`[Bot] Conversation ID updated (key=${convKey}):`, effectiveConvId);
+          }
+        } else if (effectiveConvId !== this.store.conversationId) {
+          this.store.conversationId = effectiveConvId;
+          console.log('[Bot] Conversation ID updated:', effectiveConvId);
         }
-      } else if (session.conversationId !== this.store.conversationId) {
-        this.store.conversationId = session.conversationId;
-        console.log('[Bot] Conversation ID updated:', session.conversationId);
       }
     }
   }
@@ -525,8 +690,27 @@ export class LettaBot implements AgentSession {
       : this.store.getConversationId(convKey);
 
     // Send message with fallback chain
+    const MAX_BUSY_RETRIES = 3;
+    const BUSY_RETRY_DELAY_MS = 8000; // 8s, 16s, 32s
+    let busyRetries = 0;
+
+    const trySend = async (): Promise<void> => {
+      try {
+        await this.withSessionTimeout(session.send(message), `Session send (key=${convKey})`);
+      } catch (error) {
+        if (isConversationBusyError(error) && busyRetries < MAX_BUSY_RETRIES) {
+          busyRetries++;
+          const delay = BUSY_RETRY_DELAY_MS * 2 ** (busyRetries - 1);
+          console.log(`[Bot] Conversation busy (attempt ${busyRetries}/${MAX_BUSY_RETRIES}), retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return trySend();
+        }
+        throw error;
+      }
+    };
+
     try {
-      await this.withSessionTimeout(session.send(message), `Session send (key=${convKey})`);
+      await trySend();
     } catch (error) {
       // 409 CONFLICT from orphaned approval
       if (!retried && isApprovalConflictError(error) && this.store.agentId && convId) {
@@ -573,7 +757,7 @@ export class LettaBot implements AgentSession {
     this.persistSessionState(session, convKey);
 
     // Return session and a deduplicated stream generator
-    const seenToolCallIds = new Set<string>();
+    const lastToolCallSignatures = new Map<string, string>();
     const self = this;
     const capturedConvKey = convKey; // Capture for closure
 
@@ -581,15 +765,25 @@ export class LettaBot implements AgentSession {
       for await (const raw of session.stream()) {
         const msg = raw as StreamMsg;
 
-        // Deduplicate tool_call chunks (server streams token-by-token)
+        // Allow progressive tool argument chunks through while still suppressing
+        // exact duplicate repeats from the transport layer.
         if (msg.type === 'tool_call') {
           const id = msg.toolCallId;
-          if (id && seenToolCallIds.has(id)) continue;
-          if (id) seenToolCallIds.add(id);
+          if (id) {
+            const signature = JSON.stringify([
+              msg.toolName || '',
+              msg.toolInput ?? null,
+              msg.uuid || '',
+            ]);
+            const previousSignature = lastToolCallSignatures.get(id);
+            if (previousSignature === signature) continue;
+            lastToolCallSignatures.set(id, signature);
+          }
         }
 
         if (msg.type === 'result') {
-          self.persistSessionState(session, capturedConvKey);
+          const resultConvId = typeof msg.conversationId === 'string' ? msg.conversationId : undefined;
+          self.persistSessionState(session, capturedConvKey, resultConvId);
         }
 
         yield msg;
@@ -1055,6 +1249,9 @@ export class LettaBot implements AgentSession {
       let receivedAnyData = false;
       let sawNonAssistantSinceLastUuid = false;
       const msgTypeCounts: Record<string, number> = {};
+      const seenToolCallIds = new Set<string>(); // tracks distinct tool calls for loop detection
+      const pendingServerToolCalls = new Map<string, PendingServerToolCall>();
+      let attemptedToolContinuation = false;
       
       const finalizeMessage = async () => {
         // Parse and execute XML directives before sending
@@ -1104,20 +1301,39 @@ export class LettaBot implements AgentSession {
           if (!firstChunkLogged) { lap('first stream chunk'); firstChunkLogged = true; }
           receivedAnyData = true;
           msgTypeCounts[streamMsg.type] = (msgTypeCounts[streamMsg.type] || 0) + 1;
+          appendToolArgFragment(pendingServerToolCalls, streamMsg);
+          if (streamMsg.type === 'tool_result' && streamMsg.toolCallId) {
+            pendingServerToolCalls.delete(streamMsg.toolCallId);
+          }
           
           const preview = JSON.stringify(streamMsg).slice(0, 300);
           console.log(`[Stream] type=${streamMsg.type} ${preview}`);
           
           // Finalize incremental chunks only on channels that support live edits.
           // Without editing (e.g., Telegram + TTS), flushing here causes one-word fragment messages.
+          // Exception: if we're transitioning into a tool_call and the accumulated text is
+          // meta-only reasoning ("I should ...", "I need to ..."), discard it and reset
+          // sentAnyMessage so the meta-only retry can still fire after the tool completes.
           if (canEdit && lastMsgType && lastMsgType !== streamMsg.type && response.trim() && streamMsg.type !== 'result') {
-            await finalizeMessage();
+            if (streamMsg.type === 'tool_call' && isMetaOnlyResponse(response.trim())) {
+              console.log('[Bot] Suppressing meta-only pre-tool reasoning text (will retry if tool produces no answer)');
+              response = '';
+              messageId = null;
+              sentAnyMessage = false;
+            } else {
+              await finalizeMessage();
+            }
           }
           
-          // Tool loop detection
-          const maxToolCalls = this.config.maxToolCalls ?? 100;
-          if (streamMsg.type === 'tool_call' && (msgTypeCounts['tool_call'] || 0) >= maxToolCalls) {
-            console.error(`[Bot] Agent stuck in tool loop (${msgTypeCounts['tool_call']} calls), aborting`);
+          // Tool loop detection — count distinct tool call IDs, not stream fragments.
+          // A single tool call streams many argument chunks, each with type='tool_call',
+          // so counting raw events would falsely trip on a single long send_message call.
+          if (streamMsg.type === 'tool_call' && streamMsg.toolCallId) {
+            seenToolCallIds.add(streamMsg.toolCallId);
+          }
+          const maxToolCalls = this.config.maxToolCalls ?? 30;
+          if (streamMsg.type === 'tool_call' && seenToolCallIds.size >= maxToolCalls) {
+            console.error(`[Bot] Agent stuck in tool loop (${seenToolCallIds.size} distinct tool calls), aborting`);
             session.abort().catch(() => {});
             response = '(Agent got stuck in a tool loop and was stopped. Try sending your message again.)';
             break;
@@ -1139,6 +1355,20 @@ export class LettaBot implements AgentSession {
           } else if (streamMsg.type !== 'assistant') {
             sawNonAssistantSinceLastUuid = true;
           }
+
+          // Broadcast live events to ThoughtBridge (best-effort, never throws)
+          if (streamMsg.type === 'reasoning' && streamMsg.content) {
+            ThoughtBroadcaster.broadcast({ kind: 'reasoning', text: streamMsg.content as string, agentId: this.store.agentId ?? undefined });
+          } else if (streamMsg.type === 'tool_call' && streamMsg.toolName) {
+            const args = typeof streamMsg.toolInput === 'string'
+              ? streamMsg.toolInput
+              : JSON.stringify(streamMsg.toolInput ?? {}).slice(0, 200);
+            ThoughtBroadcaster.broadcast({ kind: 'tool_call', text: `→ ${streamMsg.toolName}(${args})`, agentId: this.store.agentId ?? undefined });
+          } else if (streamMsg.type === 'tool_result') {
+            const len = (streamMsg as any).content?.length ?? 0;
+            ThoughtBroadcaster.broadcast({ kind: 'tool_result', text: `← result (${len} chars, error=${streamMsg.isError})`, agentId: this.store.agentId ?? undefined });
+          }
+
           lastMsgType = streamMsg.type;
           
           if (streamMsg.type === 'assistant') {
@@ -1168,7 +1398,7 @@ export class LettaBot implements AgentSession {
               || (trimmed.startsWith('<actions') && !trimmed.includes('</actions>'));
             // Strip any completed <actions> block from the streaming text
             const streamText = stripActionsBlock(response).trim();
-            if (canEdit && !mayBeHidden && !suppressDelivery && streamText.length > 0 && Date.now() - lastUpdate > 500) {
+            if (canEdit && !mayBeHidden && !suppressDelivery && streamText.length > 0 && Date.now() - lastUpdate > 500 && !isMetaOnlyResponse(streamText)) {
               try {
                 const prefixedStream = this.prefixResponse(streamText);
                 if (messageId) {
@@ -1191,8 +1421,16 @@ export class LettaBot implements AgentSession {
               response = resultText;
             }
             const hasResponse = response.trim().length > 0;
+            const deliverableResponse = response.trim();
+            // Check resultText directly as a safety valve: if the CLI result field has
+            // non-meta content, treat the response as deliverable even when accumulated
+            // streaming chunks were meta-only and shadowed the assignment above.
+            const resultTextDeliverable =
+              resultText.trim().length > 0 && !isMetaOnlyResponse(resultText.trim());
+            const hasDeliverableResponse =
+              (hasResponse && !isMetaOnlyResponse(deliverableResponse)) || resultTextDeliverable;
             const isTerminalError = streamMsg.success === false || !!streamMsg.error;
-            console.log(`[Bot] Stream result: success=${streamMsg.success}, hasResponse=${hasResponse}, resultLen=${resultText.length}`);
+            console.log(`[Bot] Stream result: success=${streamMsg.success}, hasResponse=${hasResponse}, deliverable=${hasDeliverableResponse}, resultLen=${resultText.length}, responsePreview=${deliverableResponse.slice(0, 80)}`);
             console.log(`[Bot] Stream message counts:`, msgTypeCounts);
             if (streamMsg.error) {
               const detail = resultText.trim();
@@ -1210,8 +1448,159 @@ export class LettaBot implements AgentSession {
             // Only retry if we never sent anything to the user. hasResponse tracks
             // the current buffer, but finalizeMessage() clears it on type changes.
             // sentAnyMessage is the authoritative "did we deliver output" flag.
-            const nothingDelivered = !hasResponse && !sentAnyMessage;
-            const shouldRetryForEmptyResult = streamMsg.success && resultText === '' && nothingDelivered;
+            if (
+              streamMsg.success &&
+              !hasDeliverableResponse &&
+              !sentAnyMessage &&
+              pendingServerToolCalls.size > 0 &&
+              this.store.agentId
+            ) {
+              const pendingCalls: PendingMultiAgentToolCall[] = Array.from(
+                pendingServerToolCalls.entries(),
+              )
+                .map(([toolCallId, info]) => ({
+                  toolCallId,
+                  toolName: info.toolName,
+                  toolArgs: info.toolArgs,
+                }))
+                .filter((call) => call.toolName && call.toolArgs);
+
+              for (const call of pendingCalls) {
+                if (call.toolName === 'relay_message_to_chatgpt') {
+                  try {
+                    console.log(
+                      `[Bot] Attempting ChatGPT relay fallback with args length=${call.toolArgs.length}`,
+                    );
+                    const relayResponse = await executeChatGptRelayFallback(
+                      call.toolArgs,
+                    );
+                    if (relayResponse) {
+                      response = relayResponse;
+                      sentAnyMessage = false;
+                      break;
+                    }
+                    console.warn(
+                      `[Bot] ChatGPT relay fallback produced no response. argsPreview=${call.toolArgs.slice(0, 260)}`,
+                    );
+                  } catch (relayErr) {
+                    console.warn(
+                      '[Bot] ChatGPT relay fallback failed:',
+                      relayErr instanceof Error ? relayErr.message : relayErr,
+                    );
+                  }
+                  continue;
+                }
+
+                try {
+                  console.log(
+                    `[Bot] Attempting multi-agent fallback for ${call.toolName} with args length=${call.toolArgs.length}`,
+                  );
+                  const fallbackResponse = await executePendingMultiAgentToolCall(
+                    call,
+                    this.store.agentId,
+                  );
+                  if (fallbackResponse) {
+                    response = fallbackResponse;
+                    sentAnyMessage = false;
+                    break;
+                  } else {
+                    console.warn(
+                      `[Bot] Multi-agent fallback produced no response for ${call.toolName}. argsPreview=${call.toolArgs.slice(0, 260)}`,
+                    );
+                  }
+                } catch (fallbackErr) {
+                  console.warn(
+                    '[Bot] Multi-agent fallback failed:',
+                    fallbackErr instanceof Error
+                      ? fallbackErr.message
+                      : fallbackErr,
+                  );
+                }
+              }
+            }
+
+            const hadToolActivityForResult =
+              (msgTypeCounts['tool_call'] || 0) > 0 ||
+              (msgTypeCounts['tool_result'] || 0) > 0;
+            const hasRecoveredToolResponse =
+              response.trim().length > 0 && !isMetaOnlyResponse(response.trim());
+            if (
+              streamMsg.success &&
+              !hasRecoveredToolResponse &&
+              !sentAnyMessage &&
+              hadToolActivityForResult &&
+              !attemptedToolContinuation
+            ) {
+              attemptedToolContinuation = true;
+              console.log('[Bot] Empty response after tool workflow; requesting one continuation turn...');
+              try {
+                const continuation = await this.runSession(
+                  'Please continue and provide the final user-visible answer to the previous message.',
+                  { retried: true, canUseTool, convKey },
+                );
+                for await (const continuationMsg of continuation.stream()) {
+                  const continuationPreview = JSON.stringify(continuationMsg).slice(0, 300);
+                  console.log(`[Stream:continuation] type=${continuationMsg.type} ${continuationPreview}`);
+                  if (continuationMsg.type === 'tool_call') {
+                    this.syncTodoToolCall(continuationMsg);
+                  }
+                  if (continuationMsg.type === 'assistant') {
+                    response += continuationMsg.content || '';
+                  }
+                  if (continuationMsg.type === 'result') {
+                    const continuationResultText =
+                      typeof continuationMsg.result === 'string'
+                        ? continuationMsg.result
+                        : '';
+                    if (continuationResultText.trim()) {
+                      response = continuationResultText;
+                    }
+                    break;
+                  }
+                }
+                if (isMetaOnlyResponse(response.trim())) {
+                  console.warn(`[Bot] Continuation produced meta-only response (len=${response.length}); suppressing`);
+                  response = '';
+                }
+              } catch (continuationErr) {
+                console.warn(
+                  '[Bot] Continuation after tool workflow failed:',
+                  continuationErr instanceof Error
+                    ? continuationErr.message
+                    : continuationErr,
+                );
+              }
+            }
+
+            // If response is meta-only (reasoning text, no actual answer) and no tool
+            // calls were pending, either retry once or suppress so the no-response
+            // fallback fires — never deliver raw reasoning text to the user.
+            if (
+              streamMsg.success &&
+              !hasDeliverableResponse &&
+              !sentAnyMessage &&
+              pendingServerToolCalls.size === 0 &&
+              !attemptedToolContinuation
+            ) {
+              if (!retried) {
+                console.log('[Bot] Meta-only result with no tool calls — retrying message...');
+                this.invalidateSession(this.resolveConversationKey(msg.channel));
+                session = null;
+                clearInterval(typingInterval);
+                return this.processMessage(msg, adapter, true);
+              }
+              // Already retried — clear so no-response fallback fires below
+              console.warn('[Bot] Meta-only result on retry — suppressing to trigger no-response fallback');
+              response = '';
+            }
+
+            const hasRecoveredResponse = response.trim().length > 0;
+            const nothingDelivered = !hasRecoveredResponse && !sentAnyMessage;
+            const shouldRetryForEmptyResult =
+              streamMsg.success &&
+              resultText === '' &&
+              nothingDelivered &&
+              !attemptedToolContinuation;
             const shouldRetryForErrorResult = isTerminalError && nothingDelivered;
             if (shouldRetryForEmptyResult || shouldRetryForErrorResult) {
               if (shouldRetryForEmptyResult) {
@@ -1250,7 +1639,7 @@ export class LettaBot implements AgentSession {
               }
             }
 
-            if (isTerminalError && !hasResponse && !sentAnyMessage) {
+            if (isTerminalError && !response.trim() && !sentAnyMessage) {
               const err = streamMsg.error || 'unknown error';
               const reason = streamMsg.stopReason ? ` [${streamMsg.stopReason}]` : '';
               response = `(Agent run failed: ${err}${reason}. Try sending your message again.)`;
@@ -1264,6 +1653,51 @@ export class LettaBot implements AgentSession {
         adapter.stopTypingIndicator?.(msg.chatId)?.catch(() => {});
       }
       lap('stream complete');
+
+      const hadToolActivity =
+        (msgTypeCounts['tool_call'] || 0) > 0 ||
+        (msgTypeCounts['tool_result'] || 0) > 0;
+
+      if (!sentAnyMessage && hadToolActivity && !response.trim() && !attemptedToolContinuation) {
+        console.log('[Bot] Empty response after tool workflow; requesting one continuation turn...');
+        try {
+          const continuation = await this.runSession(
+            'Please continue and provide the final user-visible answer to the previous message.',
+            { retried: true, canUseTool, convKey },
+          );
+          for await (const continuationMsg of continuation.stream()) {
+            const preview = JSON.stringify(continuationMsg).slice(0, 300);
+            console.log(`[Stream:continuation] type=${continuationMsg.type} ${preview}`);
+            if (continuationMsg.type === 'tool_call') {
+              this.syncTodoToolCall(continuationMsg);
+            }
+            if (continuationMsg.type === 'assistant') {
+              response += continuationMsg.content || '';
+            }
+            if (continuationMsg.type === 'result') {
+              const resultText =
+                typeof continuationMsg.result === 'string'
+                  ? continuationMsg.result
+                  : '';
+              if (resultText.trim()) {
+                response = resultText;
+              }
+              break;
+            }
+          }
+          if (isMetaOnlyResponse(response.trim())) {
+            console.warn(`[Bot] Continuation produced meta-only response (len=${response.length}); suppressing`);
+            response = '';
+          }
+        } catch (continuationErr) {
+          console.warn(
+            '[Bot] Continuation after tool workflow failed:',
+            continuationErr instanceof Error
+              ? continuationErr.message
+              : continuationErr,
+          );
+        }
+      }
 
       // Parse and execute XML directives (e.g. <actions><react emoji="eyes" /></actions>)
       if (response.trim()) {
@@ -1326,9 +1760,13 @@ export class LettaBot implements AgentSession {
             threadId: msg.threadId 
           });
         } else {
-          const hadToolActivity = (msgTypeCounts['tool_call'] || 0) > 0 || (msgTypeCounts['tool_result'] || 0) > 0;
           if (hadToolActivity) {
-            console.log('[Bot] Agent had tool activity but no assistant message - likely sent via tool');
+            console.log('[Bot] Agent had tool activity but no assistant message - returning visible fallback');
+            await adapter.sendMessage({
+              chatId: msg.chatId,
+              text: '(The agent started a tool workflow but did not return the final reply. The message path to the other agent likely stalled. Please try again.)',
+              threadId: msg.threadId,
+            });
           } else {
             await adapter.sendMessage({ 
               chatId: msg.chatId, 
@@ -1400,12 +1838,25 @@ export class LettaBot implements AgentSession {
     const acquired = await this.acquireLock(convKey);
     
     try {
-      const { stream } = await this.runSession(text, { convKey });
-      
-      try {
+      const collectResponse = async (
+        streamFactory: () => AsyncGenerator<StreamMsg>,
+      ): Promise<{ response: string; hadToolCall: boolean }> => {
         let response = '';
-        for await (const msg of stream()) {
+        let hadToolCall = false;
+        for await (const msg of streamFactory()) {
+          console.log(`[sendToAgent] type=${msg.type} content=${JSON.stringify(String(msg.content || msg.result || '').slice(0, 120))}`);
+          // Broadcast live events to ThoughtBridge (same as processMessage path)
+          if (msg.type === 'reasoning' && msg.content) {
+            ThoughtBroadcaster.broadcast({ kind: 'reasoning', text: msg.content as string, agentId: this.store.agentId ?? undefined });
+          } else if (msg.type === 'tool_call' && msg.toolName) {
+            const args = typeof msg.toolInput === 'string' ? msg.toolInput : JSON.stringify(msg.toolInput ?? {}).slice(0, 200);
+            ThoughtBroadcaster.broadcast({ kind: 'tool_call', text: `→ ${msg.toolName}(${args})`, agentId: this.store.agentId ?? undefined });
+          } else if (msg.type === 'tool_result') {
+            const len = (msg as any).content?.length ?? 0;
+            ThoughtBroadcaster.broadcast({ kind: 'tool_result', text: `← result (${len} chars, error=${msg.isError})`, agentId: this.store.agentId ?? undefined });
+          }
           if (msg.type === 'tool_call') {
+            hadToolCall = true;
             this.syncTodoToolCall(msg);
           }
           if (msg.type === 'assistant') {
@@ -1417,9 +1868,36 @@ export class LettaBot implements AgentSession {
               const detail = typeof msg.result === 'string' ? msg.result.trim() : '';
               throw new Error(detail ? `Agent run failed: ${msg.error || 'error'} (${detail})` : `Agent run failed: ${msg.error || 'error'}`);
             }
+            // Prefer terminal result text over earlier assistant scaffolding
+            // (e.g., "I will call the tool"), matching processMessage().
+            if (typeof msg.result === 'string' && msg.result.trim()) {
+              response = msg.result;
+            }
             break;
           }
         }
+        if (isMetaOnlyResponse(response.trim())) {
+          console.warn(`[sendToAgent] suppressing meta-only response (len=${response.length})`);
+          response = '';
+        }
+        return { response, hadToolCall };
+      };
+
+      try {
+        const { stream } = await this.runSession(text, { convKey });
+        let { response, hadToolCall } = await collectResponse(stream);
+
+        if (!response.trim() && hadToolCall) {
+          console.log('[sendToAgent] Empty response after tool workflow; requesting one continuation turn...');
+          const continuation = await this.runSession(
+            'Please continue and provide the final user-visible answer to the previous message.',
+            { convKey },
+          );
+          const continuationResult = await collectResponse(continuation.stream);
+          response = continuationResult.response;
+        }
+
+        console.log(`[sendToAgent] final response length=${response.length}`);
         return response;
       } catch (error) {
         // Invalidate on stream errors so next call gets a fresh subprocess
@@ -1446,7 +1924,18 @@ export class LettaBot implements AgentSession {
       const { stream } = await this.runSession(text, { convKey });
 
       try {
-        yield* stream();
+        for await (const msg of stream()) {
+          // Mirror ThoughtBroadcaster calls for SSE streaming path
+          if (msg.type === 'reasoning' && msg.content) {
+            ThoughtBroadcaster.broadcast({ kind: 'reasoning', text: msg.content as string, agentId: this.store.agentId ?? undefined });
+          } else if (msg.type === 'tool_call' && msg.toolName) {
+            const args = typeof msg.toolInput === 'string' ? msg.toolInput : JSON.stringify(msg.toolInput ?? {}).slice(0, 200);
+            ThoughtBroadcaster.broadcast({ kind: 'tool_call', text: `→ ${msg.toolName}(${args})`, agentId: this.store.agentId ?? undefined });
+          } else if (msg.type === 'tool_result') {
+            ThoughtBroadcaster.broadcast({ kind: 'tool_result', text: `← result (${(msg as any).content?.length ?? 0} chars)`, agentId: this.store.agentId ?? undefined });
+          }
+          yield msg;
+        }
       } catch (error) {
         this.invalidateSession(convKey);
         throw error;

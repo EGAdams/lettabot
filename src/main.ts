@@ -704,8 +704,11 @@ async function main() {
   printStartupBanner(bannerAgents);
   
   // Shutdown
-  const shutdown = async () => {
-    console.log('\nShutting down...');
+  let shuttingDown = false;
+  const shutdown = async (signal: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\nShutting down... signal=${signal} pid=${process.pid} ppid=${process.ppid}`);
     services.groupBatchers.forEach(b => b.stop());
     services.heartbeatServices.forEach(h => h.stop());
     services.cronServices.forEach(c => c.stop());

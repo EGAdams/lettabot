@@ -50,9 +50,10 @@ if [[ -z "${LETTA_CLI_PATH:-}" && -f "$LOCAL_LETTA_CLI_PATH" ]]; then
   echo "Using local Letta CLI: $LETTA_CLI_PATH"
 fi
 
-# Ensure built output exists (this script now runs local code directly).
-if [[ ! -f "dist/main.js" ]]; then
-  echo "dist/main.js not found. Building..."
+# Ensure built output exists and is fresh enough. The bot runs dist/main.js, so
+# a source-only crash fix is useless unless startup rebuilds it.
+if [[ ! -f "dist/main.js" ]] || find src -type f \( -name '*.ts' -o -name '*.tsx' \) -newer "dist/main.js" -print -quit | grep -q .; then
+  echo "Building fresh dist output..."
   npm run build
 fi
 
@@ -79,4 +80,42 @@ if [[ -n "${LISTEN_PID}" ]]; then
   fi
 fi
 
-exec node dist/main.js
+stop_requested=0
+child_pid=""
+
+terminate_child() {
+  stop_requested=1
+  if [[ -n "${child_pid}" ]] && kill -0 "${child_pid}" 2>/dev/null; then
+    echo "Stopping Scissari bot child PID ${child_pid}..."
+    kill "${child_pid}" 2>/dev/null || true
+    wait "${child_pid}" 2>/dev/null || true
+  fi
+}
+
+trap terminate_child INT TERM
+
+if [[ "${LETTABOT_SUPERVISE:-1}" == "0" ]]; then
+  exec node dist/main.js
+fi
+
+restart_count=0
+while true; do
+  echo "Launching Scissari bot child at $(date -Is)..."
+  node dist/main.js &
+  child_pid="$!"
+  set +e
+  wait "${child_pid}"
+  exit_code="$?"
+  set -e
+  child_pid=""
+
+  if [[ "${stop_requested}" == "1" ]]; then
+    echo "Scissari bot supervisor stopped by signal."
+    exit 0
+  fi
+
+  restart_count=$((restart_count + 1))
+  delay=$((restart_count < 6 ? restart_count * 5 : 30))
+  echo "Scissari bot child exited with code ${exit_code}; restarting in ${delay}s (restart ${restart_count})."
+  sleep "${delay}"
+done

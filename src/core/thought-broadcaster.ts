@@ -21,6 +21,7 @@ export interface ThoughtEvent {
 const BRIDGE_URL = process.env.THOUGHT_BRIDGE_URL ?? 'ws://localhost:8765';
 const DISABLED = process.env.THOUGHT_BRIDGE_DISABLED === '1';
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
+const MAX_RECONNECT_ATTEMPTS = optionalPositiveInt(process.env.THOUGHT_BRIDGE_MAX_RECONNECTS, 5);
 
 class ThoughtBroadcasterImpl {
   private ws: WebSocket | null = null;
@@ -29,13 +30,14 @@ class ThoughtBroadcasterImpl {
   private retryIndex = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  private disabledAfterFailures = false;
 
   constructor() {
     if (!DISABLED) this._connect();
   }
 
   broadcast(event: Omit<ThoughtEvent, 'type' | 'timestamp'>): void {
-    if (DISABLED) return;
+    if (DISABLED || this.disabledAfterFailures) return;
     const payload = JSON.stringify({
       type: 'thought',
       timestamp: Date.now(),
@@ -108,11 +110,31 @@ class ThoughtBroadcasterImpl {
   }
 
   private _scheduleReconnect(): void {
+    if (this.retryTimer || this.disabledAfterFailures) return;
+    if (MAX_RECONNECT_ATTEMPTS !== null && this.retryIndex >= MAX_RECONNECT_ATTEMPTS) {
+      this.disabledAfterFailures = true;
+      this.queue = [];
+      console.warn(
+        `[ThoughtBroadcaster] Bridge unavailable at ${BRIDGE_URL}; disabling after ${this.retryIndex} reconnect attempts. ` +
+          'Set THOUGHT_BRIDGE_DISABLED=1 to disable explicitly, or THOUGHT_BRIDGE_MAX_RECONNECTS=0 to retry forever.',
+      );
+      return;
+    }
     const delay = RECONNECT_DELAYS_MS[Math.min(this.retryIndex, RECONNECT_DELAYS_MS.length - 1)];
     this.retryIndex++;
     console.debug(`[ThoughtBroadcaster] Reconnecting in ${delay}ms (attempt ${this.retryIndex})`);
-    this.retryTimer = setTimeout(() => this._connect(), delay);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this._connect();
+    }, delay);
   }
 }
 
 export const ThoughtBroadcaster = new ThoughtBroadcasterImpl();
+
+function optionalPositiveInt(value: string | undefined, fallback: number): number | null {
+  if (value === '0') return null;
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}

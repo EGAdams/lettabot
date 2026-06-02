@@ -295,6 +295,16 @@ export class LettaBot implements AgentSession {
   // Stable callback wrapper so the Session options never change, but we can
   // swap out the per-message handler before each send().
   private readonly sessionCanUseTool: CanUseToolCallback = async (toolName, toolInput) => {
+    const command = getShellCommandFromToolInput(toolInput);
+    if (isShellExecutionTool(toolName) && command && isDangerousShellCommandForHostedBot(command)) {
+      console.warn(`[Bot] Denying dangerous shell command from ${toolName}: ${command.slice(0, 200)}`);
+      return {
+        behavior: 'deny' as const,
+        message:
+          'Denied: broad process-kill commands like pkill/killall can terminate the hosted lettabot process. ' +
+          'Start background processes with a captured PID and stop only that PID instead.',
+      };
+    }
     if (this.currentCanUseTool) {
       return this.currentCanUseTool(toolName, toolInput);
     }
@@ -400,7 +410,7 @@ export class LettaBot implements AgentSession {
 
   private baseSessionOptions(canUseTool?: CanUseToolCallback) {
     return {
-      permissionMode: 'bypassPermissions' as const,
+      permissionMode: 'default' as const,
       allowedTools: this.config.allowedTools,
       disallowedTools: [
         // Block built-in TodoWrite -- it requires interactive approval (fails
@@ -1294,12 +1304,27 @@ export class LettaBot implements AgentSession {
       const typingInterval = setInterval(() => {
         adapter.sendTypingIndicator(msg.chatId).catch(() => {});
       }, 4000);
-      
+
+      // Abort if no stream events arrive for too long (e.g. send_message_to_agent_and_wait_for_reply never returns).
+      const STREAM_INACTIVITY_MS = Number(process.env.STREAM_INACTIVITY_TIMEOUT_MS) || 5 * 60 * 1000;
+      let streamInactivityTimer: ReturnType<typeof setTimeout> | null = null;
+      let streamTimedOut = false;
+      const resetStreamInactivityTimer = () => {
+        if (streamInactivityTimer) clearTimeout(streamInactivityTimer);
+        streamInactivityTimer = setTimeout(() => {
+          streamTimedOut = true;
+          console.warn(`[Bot] Stream inactivity timeout after ${STREAM_INACTIVITY_MS}ms — closing session`);
+          session?.close();
+        }, STREAM_INACTIVITY_MS);
+      };
+      resetStreamInactivityTimer();
+
       try {
         let firstChunkLogged = false;
         for await (const streamMsg of run.stream()) {
           if (!firstChunkLogged) { lap('first stream chunk'); firstChunkLogged = true; }
           receivedAnyData = true;
+          resetStreamInactivityTimer();
           msgTypeCounts[streamMsg.type] = (msgTypeCounts[streamMsg.type] || 0) + 1;
           appendToolArgFragment(pendingServerToolCalls, streamMsg);
           if (streamMsg.type === 'tool_result' && streamMsg.toolCallId) {
@@ -1465,7 +1490,23 @@ export class LettaBot implements AgentSession {
                 }))
                 .filter((call) => call.toolName && call.toolArgs);
 
+              // Tools that have client-side fallback handlers.
+              // All others are server-side tools (e.g. web_fetch_exa, web_search_exa)
+              // executed by the Letta server — skip client-side fallback for those.
+              const CLIENT_SIDE_FALLBACK_TOOLS = new Set([
+                'relay_message_to_chatgpt',
+                'send_message_to_agent_async',
+                'send_message_to_agent_and_wait_for_reply',
+              ]);
+
               for (const call of pendingCalls) {
+                if (!CLIENT_SIDE_FALLBACK_TOOLS.has(call.toolName)) {
+                  // Server-side tool — already executed by Letta server.
+                  // No client-side handler; skip to avoid misleading fallback attempts.
+                  console.log(`[Bot] Skipping client-side fallback for server-side tool: ${call.toolName}`);
+                  continue;
+                }
+
                 if (call.toolName === 'relay_message_to_chatgpt') {
                   try {
                     console.log(
@@ -1534,8 +1575,16 @@ export class LettaBot implements AgentSession {
               attemptedToolContinuation = true;
               console.log('[Bot] Empty response after tool workflow; requesting one continuation turn...');
               try {
+                // Use a system-reminder to block further tool calls so the model
+                // synthesizes an answer rather than looping on web_fetch_exa, etc.
+                const continuationPrompt =
+                  '<system-reminder>\n' +
+                  'Do not call any tools for this response.\n' +
+                  'Respond in plain text only.\n' +
+                  '</system-reminder>\n\n' +
+                  'Please provide the final user-visible answer to the previous message.';
                 const continuation = await this.runSession(
-                  'Please continue and provide the final user-visible answer to the previous message.',
+                  continuationPrompt,
                   { retried: true, canUseTool, convKey },
                 );
                 for await (const continuationMsg of continuation.stream()) {
@@ -1649,10 +1698,15 @@ export class LettaBot implements AgentSession {
           }
         }
       } finally {
+        if (streamInactivityTimer) clearTimeout(streamInactivityTimer);
         clearInterval(typingInterval);
         adapter.stopTypingIndicator?.(msg.chatId)?.catch(() => {});
       }
       lap('stream complete');
+
+      if (streamTimedOut && !response.trim() && !sentAnyMessage) {
+        response = '(Scissari timed out waiting for a response — a tool call took too long. Please try again, or send /new to start a fresh conversation.)';
+      }
 
       const hadToolActivity =
         (msgTypeCounts['tool_call'] || 0) > 0 ||
@@ -1662,7 +1716,11 @@ export class LettaBot implements AgentSession {
         console.log('[Bot] Empty response after tool workflow; requesting one continuation turn...');
         try {
           const continuation = await this.runSession(
-            'Please continue and provide the final user-visible answer to the previous message.',
+            '<system-reminder>\n' +
+            'Do not call any tools for this response.\n' +
+            'Respond in plain text only.\n' +
+            '</system-reminder>\n\n' +
+            'Please provide the final user-visible answer to the previous message.',
             { retried: true, canUseTool, convKey },
           );
           for await (const continuationMsg of continuation.stream()) {
@@ -1764,7 +1822,7 @@ export class LettaBot implements AgentSession {
             console.log('[Bot] Agent had tool activity but no assistant message - returning visible fallback');
             await adapter.sendMessage({
               chatId: msg.chatId,
-              text: '(The agent started a tool workflow but did not return the final reply. The message path to the other agent likely stalled. Please try again.)',
+              text: '(I ran into an issue completing that request — the response was lost during a tool workflow. Please try again.)',
               threadId: msg.threadId,
             });
           } else {
@@ -1890,7 +1948,11 @@ export class LettaBot implements AgentSession {
         if (!response.trim() && hadToolCall) {
           console.log('[sendToAgent] Empty response after tool workflow; requesting one continuation turn...');
           const continuation = await this.runSession(
-            'Please continue and provide the final user-visible answer to the previous message.',
+            '<system-reminder>\n' +
+            'Do not call any tools for this response.\n' +
+            'Respond in plain text only.\n' +
+            '</system-reminder>\n\n' +
+            'Please provide the final user-visible answer to the previous message.',
             { convKey },
           );
           const continuationResult = await collectResponse(continuation.stream);
@@ -2009,4 +2071,23 @@ export class LettaBot implements AgentSession {
   getLastUserMessageTime(): Date | null {
     return this.lastUserMessageTime;
   }
+}
+
+function isShellExecutionTool(toolName: string): boolean {
+  return ['Bash', 'ShellCommand', 'executor_run'].includes(toolName);
+}
+
+function getShellCommandFromToolInput(toolInput: unknown): string | null {
+  if (!toolInput || typeof toolInput !== 'object') return null;
+  const input = toolInput as Record<string, unknown>;
+  for (const key of ['command', 'cmd']) {
+    const value = input[key];
+    if (typeof value === 'string') return value;
+  }
+  return null;
+}
+
+function isDangerousShellCommandForHostedBot(command: string): boolean {
+  const normalized = command.replace(/\\\n/g, ' ').replace(/\s+/g, ' ').trim();
+  return /\bpkill\s+-f\b/.test(normalized) || /\bkillall\b/.test(normalized);
 }

@@ -22,6 +22,9 @@ import { applyTelegramGroupGating } from './telegram-group-gating.js';
 import type { GroupModeConfig } from './group-mode.js';
 import { synthesizeElevenLabsSpeech, synthesizeGoogleSpeech } from '../tts/index.js';
 
+const VOICE_DOWNLOAD_TIMEOUT_MS = positiveInt(process.env.TELEGRAM_VOICE_DOWNLOAD_TIMEOUT_MS, 20_000);
+const VOICE_DOWNLOAD_ATTEMPTS = positiveInt(process.env.TELEGRAM_VOICE_DOWNLOAD_ATTEMPTS, 3);
+
 export interface TelegramConfig {
   token: string;
   dmPolicy?: DmPolicy;           // 'pairing' (default), 'allowlist', or 'open'
@@ -380,8 +383,7 @@ export class TelegramAdapter implements ChannelAdapter {
         const fileUrl = `https://api.telegram.org/file/bot${this.config.token}/${file.file_path}`;
 
         // Download audio
-        const response = await fetch(fileUrl);
-        const buffer = Buffer.from(await response.arrayBuffer());
+        const buffer = await fetchTelegramVoiceBuffer(fileUrl);
 
         // Transcribe
         const { transcribeAudio } = await import('../transcription/index.js');
@@ -420,7 +422,7 @@ export class TelegramAdapter implements ChannelAdapter {
           });
         }
       } catch (error) {
-        console.error('[Telegram] Error processing voice message:', error);
+        console.error(`[Telegram] Error processing voice message: ${formatError(error)}`);
         await ctx.reply(
           `Voice message processing error: ${error instanceof Error ? error.message : 'unknown error'}`,
         );
@@ -1025,4 +1027,51 @@ function normalizeTextForSpeech(text: string): string {
 function isElevenLabsQuotaError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return msg.includes('quota_exceeded') || msg.includes('credits remaining');
+}
+
+async function fetchTelegramVoiceBuffer(url: string): Promise<Buffer> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= VOICE_DOWNLOAD_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), VOICE_DOWNLOAD_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) {
+        throw new Error(`Telegram voice download failed (${response.status})`);
+      }
+
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      lastError = error;
+      if (attempt < VOICE_DOWNLOAD_ATTEMPTS) {
+        const delay = 500 * attempt;
+        console.warn(`[Telegram] Voice download failed (${formatError(error)}); retrying in ${delay}ms`);
+        await sleep(delay);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw new Error(`Telegram voice download failed after ${VOICE_DOWNLOAD_ATTEMPTS} attempts: ${formatError(lastError)}`);
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    const cause = (error as Error & { cause?: unknown }).cause;
+    return cause ? `${error.message} (${formatError(cause)})` : error.message;
+  }
+  return error ? String(error) : 'unknown error';
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function positiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

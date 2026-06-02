@@ -80,6 +80,9 @@ describe('SDK session contract', () => {
 
     expect(vi.mocked(resumeSession)).not.toHaveBeenCalled();
     expect(vi.mocked(createSession)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createSession).mock.calls[0][1]).toMatchObject({
+      permissionMode: 'default',
+    });
     expect(mockSession.initialize).toHaveBeenCalledTimes(1);
     expect(mockSession.send).toHaveBeenCalledTimes(2);
     expect(mockSession.send).toHaveBeenNthCalledWith(1, 'first message');

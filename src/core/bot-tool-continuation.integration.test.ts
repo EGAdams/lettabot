@@ -23,11 +23,31 @@ vi.mock('./chatgpt-relay-fallback.js', async (importOriginal) => {
   };
 });
 
+const { executePendingMultiAgentToolCall } = vi.hoisted(() => ({
+  executePendingMultiAgentToolCall: vi.fn(),
+}));
+
+vi.mock('./multi-agent-fallback.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./multi-agent-fallback.js')>();
+  return {
+    ...actual,
+    executePendingMultiAgentToolCall,
+  };
+});
+
 import { createSession, resumeSession } from '@letta-ai/letta-code-sdk';
 import { LettaBot } from './bot.js';
 import type { ChannelAdapter } from '../channels/types.js';
 import type { InboundMessage } from './types.js';
 import { parseChatGptRelayArgs } from './chatgpt-relay-fallback.js';
+
+// Prompt sent on every continuation turn (both paths).
+const CONTINUATION_PROMPT =
+  '<system-reminder>\n' +
+  'Do not call any tools for this response.\n' +
+  'Respond in plain text only.\n' +
+  '</system-reminder>\n\n' +
+  'Please provide the final user-visible answer to the previous message.';
 
 function makeAdapter(sent: string[]): ChannelAdapter {
   return {
@@ -84,6 +104,7 @@ describe('LettaBot tool continuation integration', () => {
 
     vi.clearAllMocks();
     executeChatGptRelayFallback.mockResolvedValue(null);
+    executePendingMultiAgentToolCall.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -161,10 +182,7 @@ describe('LettaBot tool continuation integration', () => {
     await waitForSent(sent);
 
     expect(mockSession.send).toHaveBeenCalledTimes(2);
-    expect(mockSession.send).toHaveBeenNthCalledWith(
-      2,
-      'Please continue and provide the final user-visible answer to the previous message.',
-    );
+    expect(mockSession.send).toHaveBeenNthCalledWith(2, CONTINUATION_PROMPT);
     expect(sent).toEqual([
       'ChatGPT says the situation remains volatile, with diplomatic talks still fragile.',
     ]);
@@ -225,12 +243,9 @@ describe('LettaBot tool continuation integration', () => {
     await waitForSent(sent);
 
     expect(mockSession.send).toHaveBeenCalledTimes(2);
-    expect(mockSession.send).toHaveBeenNthCalledWith(
-      2,
-      'Please continue and provide the final user-visible answer to the previous message.',
-    );
+    expect(mockSession.send).toHaveBeenNthCalledWith(2, CONTINUATION_PROMPT);
     expect(sent).toEqual([
-      '(The agent started a tool workflow but did not return the final reply. The message path to the other agent likely stalled. Please try again.)',
+      '(I ran into an issue completing that request — the response was lost during a tool workflow. Please try again.)',
     ]);
   });
 
@@ -316,5 +331,214 @@ describe('LettaBot tool continuation integration', () => {
     expect(args?.browser_server_url).toBe('');
     expect(args?.executor_url).toBe('');
     expect(args?.timeout_seconds).toBe(180);
+  });
+
+  // ─── Server-side MCP tool path (web_fetch_exa / web_search_exa) ─────────────
+  //
+  // Letta 0.16.7 does not stream tool_return_message for external MCP tools.
+  // This means pendingServerToolCalls accumulates the call but never removes it.
+  // The hadToolActivity continuation path must fire with the system-reminder so
+  // the model responds in plain text rather than looping back to call the tool.
+
+  it('sends continuation with system-reminder when server-side MCP tool has no tool_result', async () => {
+    const mockSession = {
+      initialize: vi.fn(async () => undefined),
+      send: vi.fn(async (_message: unknown) => undefined),
+      stream: vi
+        .fn()
+        .mockImplementationOnce(() =>
+          (async function* () {
+            // web_fetch_exa executes server-side — Letta never streams a tool_result
+            yield {
+              type: 'tool_call',
+              toolCallId: 'call-fetch',
+              toolName: 'web_fetch_exa',
+              toolInput: { urls: ['https://example.com'], maxCharacters: 12000 },
+              uuid: 'uuid-fetch',
+            };
+            // No tool_result — result arrives empty (MCP executed server-side)
+            yield {
+              type: 'result',
+              success: true,
+              result: '',
+              conversationId: 'conv-scissari',
+            };
+          })(),
+        )
+        .mockImplementationOnce(() =>
+          (async function* () {
+            yield {
+              type: 'assistant',
+              content: 'According to the page, the guide covers SCP and FTP upload workflows.',
+              uuid: 'uuid-cont',
+            };
+            yield {
+              type: 'result',
+              success: true,
+              result: 'According to the page, the guide covers SCP and FTP upload workflows.',
+              conversationId: 'conv-scissari',
+            };
+          })(),
+        ),
+      close: vi.fn(() => undefined),
+      abort: vi.fn(() => Promise.resolve()),
+      agentId: 'agent-scissari',
+      conversationId: 'conv-scissari',
+    };
+
+    vi.mocked(createSession).mockReturnValue(mockSession as never);
+    vi.mocked(resumeSession).mockReturnValue(mockSession as never);
+
+    const bot = new LettaBot({
+      workingDir: join(dataDir, 'working'),
+      allowedTools: [],
+    });
+    const sent: string[] = [];
+    const adapter = makeAdapter(sent);
+    bot.registerChannel(adapter);
+
+    await adapter.onMessage?.(makeInbound({ text: 'What does the upload guide say?' }));
+    await waitForSent(sent);
+
+    // Continuation must use the system-reminder so the model doesn't re-call web_fetch_exa
+    expect(mockSession.send).toHaveBeenCalledTimes(2);
+    expect(mockSession.send).toHaveBeenNthCalledWith(2, CONTINUATION_PROMPT);
+
+    // The answer from the continuation reaches the user
+    expect(sent).toEqual([
+      'According to the page, the guide covers SCP and FTP upload workflows.',
+    ]);
+  });
+
+  it('does not call multi-agent fallback for server-side MCP tools like web_fetch_exa', async () => {
+    const mockSession = {
+      initialize: vi.fn(async () => undefined),
+      send: vi.fn(async (_message: unknown) => undefined),
+      stream: vi
+        .fn()
+        .mockImplementationOnce(() =>
+          (async function* () {
+            yield {
+              type: 'tool_call',
+              toolCallId: 'call-fetch',
+              toolName: 'web_fetch_exa',
+              toolInput: { urls: ['https://example.com'], maxCharacters: 12000 },
+              uuid: 'uuid-fetch',
+            };
+            yield {
+              type: 'result',
+              success: true,
+              result: '',
+              conversationId: 'conv-scissari',
+            };
+          })(),
+        )
+        .mockImplementationOnce(() =>
+          (async function* () {
+            yield {
+              type: 'result',
+              success: true,
+              result: 'Here is what I found on the page.',
+              conversationId: 'conv-scissari',
+            };
+          })(),
+        ),
+      close: vi.fn(() => undefined),
+      abort: vi.fn(() => Promise.resolve()),
+      agentId: 'agent-scissari',
+      conversationId: 'conv-scissari',
+    };
+
+    vi.mocked(createSession).mockReturnValue(mockSession as never);
+    vi.mocked(resumeSession).mockReturnValue(mockSession as never);
+
+    const bot = new LettaBot({
+      workingDir: join(dataDir, 'working'),
+      allowedTools: [],
+    });
+    const sent: string[] = [];
+    const adapter = makeAdapter(sent);
+    bot.registerChannel(adapter);
+
+    await adapter.onMessage?.(makeInbound({ text: 'Fetch this page for me.' }));
+    await waitForSent(sent);
+
+    // Must NOT attempt multi-agent fallback for a server-side MCP tool
+    expect(executePendingMultiAgentToolCall).not.toHaveBeenCalled();
+
+    // The continuation must be tried instead
+    expect(mockSession.send).toHaveBeenCalledTimes(2);
+    expect(mockSession.send).toHaveBeenNthCalledWith(2, CONTINUATION_PROMPT);
+  });
+
+  it('sends fallback message when continuation after server-side MCP tool also calls tools', async () => {
+    const mockSession = {
+      initialize: vi.fn(async () => undefined),
+      send: vi.fn(async (_message: unknown) => undefined),
+      stream: vi
+        .fn()
+        // First stream: web_fetch_exa called, no tool_result, meta-only reasoning result
+        .mockImplementationOnce(() =>
+          (async function* () {
+            yield {
+              type: 'tool_call',
+              toolCallId: 'call-fetch',
+              toolName: 'web_fetch_exa',
+              toolInput: { urls: ['https://example.com'], maxCharacters: 12000 },
+              uuid: 'uuid-fetch',
+            };
+            yield {
+              type: 'result',
+              success: true,
+              // Meta-only text: starts with "I will " → isMetaOnlyResponse returns true
+              result: 'I will summarize the page content for you shortly.',
+              conversationId: 'conv-scissari',
+            };
+          })(),
+        )
+        // Continuation stream: model ignores the system-reminder and calls web_fetch_exa again
+        .mockImplementationOnce(() =>
+          (async function* () {
+            yield {
+              type: 'tool_call',
+              toolCallId: 'call-fetch-2',
+              toolName: 'web_fetch_exa',
+              toolInput: { urls: ['https://example.com'], maxCharacters: 12000 },
+              uuid: 'uuid-fetch-2',
+            };
+            yield {
+              type: 'result',
+              success: true,
+              result: '',
+              conversationId: 'conv-scissari',
+            };
+          })(),
+        ),
+      close: vi.fn(() => undefined),
+      abort: vi.fn(() => Promise.resolve()),
+      agentId: 'agent-scissari',
+      conversationId: 'conv-scissari',
+    };
+
+    vi.mocked(createSession).mockReturnValue(mockSession as never);
+    vi.mocked(resumeSession).mockReturnValue(mockSession as never);
+
+    const bot = new LettaBot({
+      workingDir: join(dataDir, 'working'),
+      allowedTools: [],
+    });
+    const sent: string[] = [];
+    const adapter = makeAdapter(sent);
+    bot.registerChannel(adapter);
+
+    await adapter.onMessage?.(makeInbound({ text: 'What does example.com say?' }));
+    await waitForSent(sent);
+
+    // Must send a fallback (not loop forever); must NOT be a raw tool-call leak
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toContain('web_fetch_exa');
+    expect(sent[0]).not.toContain('tool_call');
+    // The fallback message should not be an empty string
+    expect(sent[0].trim()).not.toBe('');
   });
 });

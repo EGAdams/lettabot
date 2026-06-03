@@ -66,10 +66,11 @@ LETTABOT_API_PORT="${LETTABOT_API_PORT:-$(
 LETTABOT_API_PORT="${LETTABOT_API_PORT:-8080}"
 
 # If the configured port is already used by this same bot, stop the stale instance first.
+# Note: cmdline may be relative ("node dist/main.js") or absolute, so match on dist/main.js only.
 LISTEN_PID="$(lsof -tiTCP:${LETTABOT_API_PORT} -sTCP:LISTEN || true)"
 if [[ -n "${LISTEN_PID}" ]]; then
   CMDLINE="$(tr '\0' ' ' <"/proc/${LISTEN_PID}/cmdline" 2>/dev/null || true)"
-  if [[ "${CMDLINE}" == *"$SCRIPT_DIR/dist/main.js"* ]]; then
+  if [[ "${CMDLINE}" == *"dist/main.js"* ]]; then
     echo "Stopping stale Scissari instance on port ${LETTABOT_API_PORT} (PID ${LISTEN_PID})..."
     kill "${LISTEN_PID}" || true
     sleep 1
@@ -79,6 +80,19 @@ if [[ -n "${LISTEN_PID}" ]]; then
     exit 1
   fi
 fi
+
+SUPERVISOR_PIDFILE="${SCRIPT_DIR}/.supervisor.pid"
+
+# Prevent multiple supervisor instances using a PID file.
+if [[ -f "${SUPERVISOR_PIDFILE}" ]]; then
+  EXISTING_PID="$(cat "${SUPERVISOR_PIDFILE}" 2>/dev/null || true)"
+  if [[ -n "${EXISTING_PID}" ]] && kill -0 "${EXISTING_PID}" 2>/dev/null; then
+    echo "Error: another Scissari supervisor is already running (PID ${EXISTING_PID})."
+    echo "       Run 'kill ${EXISTING_PID}' to stop it, or delete ${SUPERVISOR_PIDFILE}."
+    exit 1
+  fi
+fi
+echo $$ > "${SUPERVISOR_PIDFILE}"
 
 stop_requested=0
 child_pid=""
@@ -90,6 +104,7 @@ terminate_child() {
     kill "${child_pid}" 2>/dev/null || true
     wait "${child_pid}" 2>/dev/null || true
   fi
+  rm -f "${SUPERVISOR_PIDFILE}"
 }
 
 trap terminate_child INT TERM
@@ -100,6 +115,16 @@ fi
 
 restart_count=0
 while true; do
+  # Before each restart, verify the port is free. If another process holds it,
+  # abort so we don't spawn a child that immediately crashes with EADDRINUSE.
+  LISTEN_PID="$(lsof -tiTCP:${LETTABOT_API_PORT} -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "${LISTEN_PID}" ]] && [[ "${LISTEN_PID}" != "${child_pid}" ]]; then
+    CMDLINE="$(tr '\0' ' ' <"/proc/${LISTEN_PID}/cmdline" 2>/dev/null || true)"
+    echo "Error: port ${LETTABOT_API_PORT} is held by PID ${LISTEN_PID} (${CMDLINE:0:80}). Aborting restart."
+    rm -f "${SUPERVISOR_PIDFILE}"
+    exit 1
+  fi
+
   echo "Launching Scissari bot child at $(date -Is)..."
   node dist/main.js &
   child_pid="$!"
@@ -111,6 +136,7 @@ while true; do
 
   if [[ "${stop_requested}" == "1" ]]; then
     echo "Scissari bot supervisor stopped by signal."
+    rm -f "${SUPERVISOR_PIDFILE}"
     exit 0
   fi
 

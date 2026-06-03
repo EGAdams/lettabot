@@ -1260,6 +1260,7 @@ export class LettaBot implements AgentSession {
       let sawNonAssistantSinceLastUuid = false;
       const msgTypeCounts: Record<string, number> = {};
       const seenToolCallIds = new Set<string>(); // tracks distinct tool calls for loop detection
+      const toolNameCounts: Record<string, number> = {}; // per-tool call counts for repetition detection
       const pendingServerToolCalls = new Map<string, PendingServerToolCall>();
       let attemptedToolContinuation = false;
       
@@ -1353,10 +1354,21 @@ export class LettaBot implements AgentSession {
           // Tool loop detection — count distinct tool call IDs, not stream fragments.
           // A single tool call streams many argument chunks, each with type='tool_call',
           // so counting raw events would falsely trip on a single long send_message call.
-          if (streamMsg.type === 'tool_call' && streamMsg.toolCallId) {
+          if (streamMsg.type === 'tool_call' && streamMsg.toolCallId && !seenToolCallIds.has(streamMsg.toolCallId)) {
             seenToolCallIds.add(streamMsg.toolCallId);
+            // Also track per-tool-name counts to catch single-tool spirals early
+            if (streamMsg.toolName) {
+              toolNameCounts[streamMsg.toolName] = (toolNameCounts[streamMsg.toolName] ?? 0) + 1;
+              const maxPerTool = 8;
+              if (toolNameCounts[streamMsg.toolName] >= maxPerTool) {
+                console.error(`[Bot] Agent stuck in ${streamMsg.toolName} loop (${toolNameCounts[streamMsg.toolName]} calls), aborting`);
+                session.abort().catch(() => {});
+                response = '(Agent got stuck in a tool loop and was stopped. Try sending your message again.)';
+                break;
+              }
+            }
           }
-          const maxToolCalls = this.config.maxToolCalls ?? 30;
+          const maxToolCalls = this.config.maxToolCalls ?? 15;
           if (streamMsg.type === 'tool_call' && seenToolCallIds.size >= maxToolCalls) {
             console.error(`[Bot] Agent stuck in tool loop (${seenToolCallIds.size} distinct tool calls), aborting`);
             session.abort().catch(() => {});

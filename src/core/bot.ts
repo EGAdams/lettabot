@@ -1359,20 +1359,41 @@ export class LettaBot implements AgentSession {
             // Also track per-tool-name counts to catch single-tool spirals early
             if (streamMsg.toolName) {
               toolNameCounts[streamMsg.toolName] = (toolNameCounts[streamMsg.toolName] ?? 0) + 1;
-              const maxPerTool = 8;
+              // Blocking multi-agent tools get a much lower limit — each call can hang for minutes
+              // and the loop is almost always a sign of a stuck conversation context, not useful retries.
+              const isBlockingMultiAgentTool =
+                streamMsg.toolName === 'send_message_to_agent_and_wait_for_reply';
+              const maxPerTool = isBlockingMultiAgentTool ? 3 : 8;
               if (toolNameCounts[streamMsg.toolName] >= maxPerTool) {
-                console.error(`[Bot] Agent stuck in ${streamMsg.toolName} loop (${toolNameCounts[streamMsg.toolName]} calls), aborting`);
+                console.error(`[Bot] Agent stuck in ${streamMsg.toolName} loop (${toolNameCounts[streamMsg.toolName]} calls), aborting and resetting conversation`);
                 session.abort().catch(() => {});
-                response = '(Agent got stuck in a tool loop and was stopped. Try sending your message again.)';
+                // Auto-reset conversation so the next message starts fresh instead of
+                // re-entering the same loop from the corrupted conversation history.
+                const loopConvKey = this.resolveConversationKey(msg.channel);
+                this.invalidateSession(loopConvKey);
+                if (loopConvKey !== 'shared') {
+                  this.store.clearConversation(loopConvKey);
+                } else {
+                  this.store.conversationId = null;
+                }
+                response = "(I got stuck in a tool loop and stopped. I've reset our conversation — please send your message again and I'll try a different approach.)";
                 break;
               }
             }
           }
           const maxToolCalls = this.config.maxToolCalls ?? 15;
           if (streamMsg.type === 'tool_call' && seenToolCallIds.size >= maxToolCalls) {
-            console.error(`[Bot] Agent stuck in tool loop (${seenToolCallIds.size} distinct tool calls), aborting`);
+            console.error(`[Bot] Agent stuck in tool loop (${seenToolCallIds.size} distinct tool calls), aborting and resetting conversation`);
             session.abort().catch(() => {});
-            response = '(Agent got stuck in a tool loop and was stopped. Try sending your message again.)';
+            // Auto-reset conversation so the next message starts fresh
+            const loopConvKey = this.resolveConversationKey(msg.channel);
+            this.invalidateSession(loopConvKey);
+            if (loopConvKey !== 'shared') {
+              this.store.clearConversation(loopConvKey);
+            } else {
+              this.store.conversationId = null;
+            }
+            response = "(I got stuck in a tool loop and stopped. I've reset our conversation — please send your message again and I'll try a different approach.)";
             break;
           }
 

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "todos": [
+    {
+      "id": "todo-318cb9b9-31bc-4265-a9b7-91b337bc705b",
+      "text": "When EG starts the next conversation, resume two threads: 1) publish the latest dashboard to the Windows 10 docroot and provide a working trycloudflare link that opens directly on Android, and 2) continue the MFF/e_two_e_processing work and verify the correct project path/context before proceeding.",
+      "created": "2026-06-02T23:13:59.214Z",
+      "due": null,
+      "snoozed_until": null,
+      "recurring": null,
+      "completed": false,
+      "completed_at": null
+    }
+  ]
+}

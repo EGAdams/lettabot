@@ -22,6 +22,7 @@ import { createManageTodoTool } from '../tools/todo.js';
 import { syncTodosFromTool } from '../todo/store.js';
 import { executePendingMultiAgentToolCall, type PendingMultiAgentToolCall } from './multi-agent-fallback.js';
 import { executeChatGptRelayFallback } from './chatgpt-relay-fallback.js';
+import { executeExecutorRunFallback } from './executor-fallback.js';
 import { ThoughtBroadcaster } from './thought-broadcaster.js';
 
 
@@ -1379,6 +1380,7 @@ export class LettaBot implements AgentSession {
             if (streamMsg.toolName) {
               toolNameCounts[streamMsg.toolName] = (toolNameCounts[streamMsg.toolName] ?? 0) + 1;
               toolCallIdToName.set(streamMsg.toolCallId, streamMsg.toolName);
+              if (streamMsg.toolName === "executor_run") { try { appendFileSync((process.env.HOME || "/home/adamsl") + "/.letta/scissari-executor-trace.jsonl", JSON.stringify({ ts: new Date().toISOString(), kind: "tool_call", id: streamMsg.toolCallId, n: toolNameCounts[streamMsg.toolName] }) + String.fromCharCode(10)); } catch { /* trace best-effort */ } }
               // Blocking multi-agent tools get a much lower limit — each call can hang for minutes
               // and the loop is almost always a sign of a stuck conversation context, not useful retries.
               const isBlockingMultiAgentTool =
@@ -1432,6 +1434,7 @@ export class LettaBot implements AgentSession {
             sawNonAssistantSinceLastUuid = true;
           } else if (streamMsg.type === 'tool_result') {
             console.log(`[Stream] <<< TOOL RESULT: error=${streamMsg.isError}, len=${(streamMsg as any).content?.length || 0}`);
+            if (toolCallIdToName.get(streamMsg.toolCallId || "") === "executor_run") { try { appendFileSync((process.env.HOME || "/home/adamsl") + "/.letta/scissari-executor-trace.jsonl", JSON.stringify({ ts: new Date().toISOString(), kind: "tool_result", id: streamMsg.toolCallId, isError: streamMsg.isError, len: ((streamMsg as any).content ? (streamMsg as any).content.length : 0) }) + String.fromCharCode(10)); } catch { /* trace best-effort */ } }
             if (streamMsg.isError) {
               lastToolError = {
                 tool: toolCallIdToName.get(streamMsg.toolCallId ?? '') ?? 'unknown',
@@ -1565,6 +1568,7 @@ export class LettaBot implements AgentSession {
                 'relay_message_to_chatgpt',
                 'send_message_to_agent_async',
                 'send_message_to_agent_and_wait_for_reply',
+                'executor_run',
               ]);
 
               for (const call of pendingCalls) {
@@ -1595,6 +1599,29 @@ export class LettaBot implements AgentSession {
                     console.warn(
                       '[Bot] ChatGPT relay fallback failed:',
                       relayErr instanceof Error ? relayErr.message : relayErr,
+                    );
+                  }
+                  continue;
+                }
+
+                if (call.toolName === 'executor_run') {
+                  try {
+                    console.log(
+                      `[Bot] Attempting executor_run fallback with args length=${call.toolArgs.length}`,
+                    );
+                    const executorResponse = await executeExecutorRunFallback(call);
+                    if (executorResponse) {
+                      response = executorResponse;
+                      sentAnyMessage = false;
+                      break;
+                    }
+                    console.warn(
+                      `[Bot] executor_run fallback produced no response. argsPreview=${call.toolArgs.slice(0, 260)}`,
+                    );
+                  } catch (executorErr) {
+                    console.warn(
+                      '[Bot] executor_run fallback failed:',
+                      executorErr instanceof Error ? executorErr.message : executorErr,
                     );
                   }
                   continue;

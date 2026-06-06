@@ -244,9 +244,14 @@ describe('LettaBot tool continuation integration', () => {
 
     expect(mockSession.send).toHaveBeenCalledTimes(2);
     expect(mockSession.send).toHaveBeenNthCalledWith(2, CONTINUATION_PROMPT);
-    expect(sent).toEqual([
-      '(I ran into an issue completing that request — the response was lost during a tool workflow. Please try again.)',
-    ]);
+    // F7 (TOOL_RESPONSE_LOST): the fallback must now name the concrete failure
+    // and confirm the conversation is intact — not the old blind "try again".
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain('I ran into an issue completing that request');
+    expect(sent[0]).toContain('lost in transit');
+    expect(sent[0]).toContain('send your message again');
+    // No tool error was surfaced in this scenario, so no "Last tool error" line.
+    expect(sent[0]).not.toContain('Last tool error');
   });
 
   it('executes the ChatGPT relay fallback for tokenized relay tool calls before continuing', async () => {

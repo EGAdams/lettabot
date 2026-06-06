@@ -1310,6 +1310,22 @@ export class LettaBot implements AgentSession {
 • Reason: ${reason}${errLine}
 • Please report this so it can be fixed. Resend your message and I will retry a different way.`;
       };
+      // Forensic recorder (the "Memento"): persist WHY a turn failed so an alert
+      // never has to say "no error captured". Shared by the F7 lost-response path.
+      const logForensicEvent = (
+        event: string,
+        severity: string,
+        reason: string,
+        detail: Record<string, unknown>,
+      ): void => {
+        const evt = { timestamp: new Date().toISOString(), severity, event, reason, ...detail, lastToolError };
+        console.error(`🚨 [${event.toUpperCase()}] ${reason} | ${JSON.stringify(detail)} | lastToolError=${JSON.stringify(lastToolError)}`);
+        try {
+          const alertsPath = `${process.env.HOME || '/home/adamsl'}/.letta/scissari-alerts.jsonl`;
+          mkdirSync(dirname(alertsPath), { recursive: true });
+          appendFileSync(alertsPath, JSON.stringify(evt) + String.fromCharCode(10));
+        } catch { /* best effort */ }
+      };
       const pendingServerToolCalls = new Map<string, PendingServerToolCall>();
       let attemptedToolContinuation = false;
       
@@ -1957,10 +1973,31 @@ export class LettaBot implements AgentSession {
           });
         } else {
           if (hadToolActivity) {
-            console.log('[Bot] Agent had tool activity but no assistant message - returning visible fallback');
+            // F7 (TOOL_RESPONSE_LOST): a tool ran but its result never surfaced
+            // as an assistant message, and the one continuation re-sync above
+            // also came back empty. This is NOT the 14-call spin and NOT F5
+            // (where no tool_return is ever produced) — here the result existed
+            // but was lost in transit. Classify it, record a forensic event, and
+            // tell the user the concrete reason instead of a blind "try again".
+            // The conversation is intact (no reset), so a resend should succeed.
+            const f7Reason = lastToolError
+              ? `tool '${lastToolError.tool}' produced a result, but it was lost before a reply could be formed`
+              : 'a tool ran but its result was lost in transit (stream/relay drop) before a reply could be formed';
+            logForensicEvent('tool_response_lost', 'warning', f7Reason, {
+              guard: 'tool_response_lost',
+              kind: 'tool_response_lost', // F7 — see divide_and_conquer_scissari_fix.html
+              resyncAttempted: attemptedToolContinuation,
+              toolCalls: msgTypeCounts['tool_call'] || 0,
+              toolResults: msgTypeCounts['tool_result'] || 0,
+              conversationKey: this.resolveConversationKey(msg.channel),
+            });
+            const f7ErrLine = lastToolError
+              ? `\n• Last tool error (${lastToolError.tool}): ${lastToolError.content}`
+              : '';
+            console.log('[Bot] Agent had tool activity but no assistant message - returning classified F7 fallback');
             await adapter.sendMessage({
               chatId: msg.chatId,
-              text: '(I ran into an issue completing that request — the response was lost during a tool workflow. Please try again.)',
+              text: `(I ran into an issue completing that request — ${f7Reason}.${f7ErrLine}\nThe conversation is intact, so please just send your message again.)`,
               threadId: msg.threadId,
             });
           } else {

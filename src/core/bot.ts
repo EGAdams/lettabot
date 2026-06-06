@@ -78,6 +78,22 @@ function isConversationMissingError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * F7: Detect a dead SDK subprocess transport. The heartbeat (and any send after
+ * an inactivity close) hits this as:
+ *   "Transport not connected (closed=true, pid=undefined, stdin=false)"
+ * It must trigger a re-spawn + retry, not crash the bot.
+ */
+function isTransportDeadError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    if (msg.includes('transport not connected')) return true;
+    if (msg.includes('pid=undefined')) return true;
+    if (msg.includes('closed=true') && msg.includes('stdin=false')) return true;
+  }
+  return false;
+}
+
 function normalizeResponseText(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim();
 }
@@ -757,6 +773,19 @@ export class LettaBot implements AgentSession {
           this.invalidateSession(convKey);
           throw retryError;
         }
+      } else if (isTransportDeadError(error)) {
+        // F7 (bug b): the SDK subprocess died (pid=undefined / "Transport not connected").
+        // Re-spawn a fresh session and retry the send ONCE, instead of crashing the
+        // heartbeat with a raw transport error.
+        console.warn(`[Bot] Transport dead (key=${convKey}) — re-spawning subprocess and retrying send...`);
+        this.invalidateSession(convKey);
+        session = await this.ensureSessionForKey(convKey);
+        try {
+          await this.withSessionTimeout(session.send(message), `Session send respawn (key=${convKey})`);
+        } catch (retryError) {
+          this.invalidateSession(convKey);
+          throw retryError;
+        }
       } else {
         // Unknown error -- invalidate so we get a fresh subprocess next time
         this.invalidateSession(convKey);
@@ -1328,15 +1357,23 @@ export class LettaBot implements AgentSession {
 
       // Abort if no stream events arrive for too long (e.g. send_message_to_agent_and_wait_for_reply never returns).
       const STREAM_INACTIVITY_MS = Number(process.env.STREAM_INACTIVITY_TIMEOUT_MS) || 5 * 60 * 1000;
+      // F7 (bug a): a tool call (e.g. a big executor_run) can legitimately run far longer
+      // than the stream-idle window while emitting NO stream events. Killing the session on
+      // the blind 5-min timer then nukes a call that was about to succeed. So while ≥1 tool
+      // call is in flight we use a longer, tool-call-specific deadline.
+      const TOOL_CALL_DEADLINE_MS = Number(process.env.TOOL_CALL_DEADLINE_MS) || 15 * 60 * 1000;
+      const inFlightToolCalls = new Set<string>();
       let streamInactivityTimer: ReturnType<typeof setTimeout> | null = null;
       let streamTimedOut = false;
       const resetStreamInactivityTimer = () => {
         if (streamInactivityTimer) clearTimeout(streamInactivityTimer);
+        const inToolCall = inFlightToolCalls.size > 0;
+        const timeoutMs = inToolCall ? TOOL_CALL_DEADLINE_MS : STREAM_INACTIVITY_MS;
         streamInactivityTimer = setTimeout(() => {
           streamTimedOut = true;
-          console.warn(`[Bot] Stream inactivity timeout after ${STREAM_INACTIVITY_MS}ms — closing session`);
+          console.warn(`[Bot] Stream inactivity timeout after ${timeoutMs}ms (inToolCall=${inToolCall}) — closing session`);
           session?.close();
-        }, STREAM_INACTIVITY_MS);
+        }, timeoutMs);
       };
       resetStreamInactivityTimer();
 
@@ -1376,6 +1413,10 @@ export class LettaBot implements AgentSession {
           // so counting raw events would falsely trip on a single long send_message call.
           if (streamMsg.type === 'tool_call' && streamMsg.toolCallId && !seenToolCallIds.has(streamMsg.toolCallId)) {
             seenToolCallIds.add(streamMsg.toolCallId);
+            // F7: a tool call is now in flight — extend the inactivity deadline so a long
+            // (but healthy) tool call isn't killed by the blind stream-idle timer.
+            inFlightToolCalls.add(streamMsg.toolCallId);
+            resetStreamInactivityTimer();
             // Also track per-tool-name counts to catch single-tool spirals early
             if (streamMsg.toolName) {
               toolNameCounts[streamMsg.toolName] = (toolNameCounts[streamMsg.toolName] ?? 0) + 1;
@@ -1434,6 +1475,8 @@ export class LettaBot implements AgentSession {
             sawNonAssistantSinceLastUuid = true;
           } else if (streamMsg.type === 'tool_result') {
             console.log(`[Stream] <<< TOOL RESULT: error=${streamMsg.isError}, len=${(streamMsg as any).content?.length || 0}`);
+            // F7: tool call returned — drop it from in-flight and re-arm the normal idle timer.
+            if (streamMsg.toolCallId) { inFlightToolCalls.delete(streamMsg.toolCallId); resetStreamInactivityTimer(); }
             if (toolCallIdToName.get(streamMsg.toolCallId || "") === "executor_run") { try { appendFileSync((process.env.HOME || "/home/adamsl") + "/.letta/scissari-executor-trace.jsonl", JSON.stringify({ ts: new Date().toISOString(), kind: "tool_result", id: streamMsg.toolCallId, isError: streamMsg.isError, len: ((streamMsg as any).content ? (streamMsg as any).content.length : 0) }) + String.fromCharCode(10)); } catch { /* trace best-effort */ } }
             if (streamMsg.isError) {
               lastToolError = {

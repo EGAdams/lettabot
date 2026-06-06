@@ -64,6 +64,8 @@ export interface AgentConfig {
       target?: string;       // Delivery target ("telegram:123", "slack:C123", etc.)
     };
     maxToolCalls?: number;
+    maxToolCallsPerTool?: number;
+    maxMultiAgentToolCalls?: number;
   };
   /** Polling config */
   polling?: PollingYamlConfig;
@@ -136,6 +138,8 @@ export interface LettaBotConfig {
     };
     inlineImages?: boolean;   // Send images directly to the LLM (default: true). Set false to only send file paths.
     maxToolCalls?: number;  // Abort if agent calls this many tools in one turn (default: 100)
+    maxToolCallsPerTool?: number;  // Per-single-tool cap in one turn (default: 14)
+    maxMultiAgentToolCalls?: number;  // Cap for blocking multi-agent tools (default: 3)
   };
 
   // Polling - system-level background checks (Gmail, etc.)

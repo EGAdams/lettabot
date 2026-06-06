@@ -5,7 +5,7 @@
  */
 
 import { createAgent, createSession, resumeSession, Session as LettaSession, imageFromFile, imageFromURL, type MessageContentItem, type SendMessage, type CanUseToolCallback } from '@letta-ai/letta-code-sdk';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ChannelAdapter } from '../channels/types.js';
 import type { BotConfig, InboundMessage, TriggerContext } from './types.js';
@@ -1261,6 +1261,25 @@ export class LettaBot implements AgentSession {
       const msgTypeCounts: Record<string, number> = {};
       const seenToolCallIds = new Set<string>(); // tracks distinct tool calls for loop detection
       const toolNameCounts: Record<string, number> = {}; // per-tool call counts for repetition detection
+      const toolCallIdToName = new Map<string, string>(); // tool_call id -> tool name, for error attribution
+      let lastToolError: { tool: string; content: string } | null = null; // most recent failing tool result
+      const raiseStallAlert = (reason: string, detail: Record<string, unknown>): string => {
+        const evt = { timestamp: new Date().toISOString(), severity: 'critical', event: 'agent_stall', reason, ...detail, lastToolError };
+        console.error(`🚨🚨 [STALL ALERT] ${reason} | ${JSON.stringify(detail)} | lastToolError=${JSON.stringify(lastToolError)}`);
+        try {
+          const alertsPath = `${process.env.HOME || '/home/adamsl'}/.letta/scissari-alerts.jsonl`;
+          mkdirSync(dirname(alertsPath), { recursive: true });
+          appendFileSync(alertsPath, JSON.stringify(evt) + String.fromCharCode(10));
+        } catch { /* best effort */ }
+        const errLine = lastToolError
+          ? `
+• Last tool error (${lastToolError.tool}): ${lastToolError.content}`
+          : `
+• No specific tool error captured — likely a genuine repetition/stall.`;
+        return `🚨 I stalled and reset my conversation — I could NOT finish your request.
+• Reason: ${reason}${errLine}
+• Please report this so it can be fixed. Resend your message and I will retry a different way.`;
+      };
       const pendingServerToolCalls = new Map<string, PendingServerToolCall>();
       let attemptedToolContinuation = false;
       
@@ -1359,11 +1378,14 @@ export class LettaBot implements AgentSession {
             // Also track per-tool-name counts to catch single-tool spirals early
             if (streamMsg.toolName) {
               toolNameCounts[streamMsg.toolName] = (toolNameCounts[streamMsg.toolName] ?? 0) + 1;
+              toolCallIdToName.set(streamMsg.toolCallId, streamMsg.toolName);
               // Blocking multi-agent tools get a much lower limit — each call can hang for minutes
               // and the loop is almost always a sign of a stuck conversation context, not useful retries.
               const isBlockingMultiAgentTool =
                 streamMsg.toolName === 'send_message_to_agent_and_wait_for_reply';
-              const maxPerTool = isBlockingMultiAgentTool ? 3 : 8;
+              const maxPerTool = isBlockingMultiAgentTool
+                ? (this.config.maxMultiAgentToolCalls ?? 3)
+                : (this.config.maxToolCallsPerTool ?? 14);
               if (toolNameCounts[streamMsg.toolName] >= maxPerTool) {
                 console.error(`[Bot] Agent stuck in ${streamMsg.toolName} loop (${toolNameCounts[streamMsg.toolName]} calls), aborting and resetting conversation`);
                 session.abort().catch(() => {});
@@ -1376,7 +1398,10 @@ export class LettaBot implements AgentSession {
                 } else {
                   this.store.conversationId = null;
                 }
-                response = "(I got stuck in a tool loop and stopped. I've reset our conversation — please send your message again and I'll try a different approach.)";
+                response = raiseStallAlert(
+                  `Repeated '${streamMsg.toolName}' calls hit the ${maxPerTool}-call cap (the tool is most likely failing and being retried)`,
+                  { guard: 'per_tool_cap', tool: streamMsg.toolName, calls: toolNameCounts[streamMsg.toolName], cap: maxPerTool, conversationKey: loopConvKey },
+                );
                 break;
               }
             }
@@ -1393,7 +1418,10 @@ export class LettaBot implements AgentSession {
             } else {
               this.store.conversationId = null;
             }
-            response = "(I got stuck in a tool loop and stopped. I've reset our conversation — please send your message again and I'll try a different approach.)";
+            response = raiseStallAlert(
+              `Reached the total tool-call cap (${seenToolCallIds.size} distinct tool calls in one turn, limit ${maxToolCalls})`,
+              { guard: 'total_cap', distinctCalls: seenToolCallIds.size, cap: maxToolCalls, conversationKey: loopConvKey },
+            );
             break;
           }
 
@@ -1404,6 +1432,13 @@ export class LettaBot implements AgentSession {
             sawNonAssistantSinceLastUuid = true;
           } else if (streamMsg.type === 'tool_result') {
             console.log(`[Stream] <<< TOOL RESULT: error=${streamMsg.isError}, len=${(streamMsg as any).content?.length || 0}`);
+            if (streamMsg.isError) {
+              lastToolError = {
+                tool: toolCallIdToName.get(streamMsg.toolCallId ?? '') ?? 'unknown',
+                content: String((streamMsg as any).content ?? '').split(String.fromCharCode(10)).join(' ').trim().slice(0, 500),
+              };
+              console.error(`🚨 [TOOL ERROR] ${lastToolError.tool}: ${lastToolError.content}`);
+            }
             sawNonAssistantSinceLastUuid = true;
           } else if (streamMsg.type === 'assistant' && lastMsgType !== 'assistant') {
             console.log(`[Bot] Generating response...`);

@@ -134,6 +134,8 @@ export interface BotConfig {
 
   // Safety
   maxToolCalls?: number; // Abort if agent calls this many tools in one turn (default: 100)
+  maxToolCallsPerTool?: number; // Abort if a SINGLE tool is called this many times in one turn (default: 14)
+  maxMultiAgentToolCalls?: number; // Lower cap for blocking multi-agent tools, e.g. send_message_to_agent_and_wait_for_reply (default: 3)
 
   // Security
   allowedUsers?: string[];  // Empty = allow all

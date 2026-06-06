@@ -16,6 +16,7 @@ import { LettaBot } from './bot.js';
 import type { ChannelAdapter } from '../channels/types.js';
 import type { InboundMessage } from './types.js';
 
+// legacy reference kept for documentation
 const LOOP_RESET_MSG =
   "(I got stuck in a tool loop and stopped. I've reset our conversation — please send your message again and I'll try a different approach.)";
 
@@ -125,7 +126,7 @@ describe('LettaBot tool loop detection', () => {
       await bot['channels'].get('telegram')!.onMessage!(makeInbound());
       await waitForMessages(sent, 1);
 
-      expect(sent[0]).toBe(LOOP_RESET_MSG);
+      expect(sent[0]).toContain('stalled and reset');
       expect(session.abort).toHaveBeenCalledTimes(1);
     });
 
@@ -310,7 +311,7 @@ describe('LettaBot tool loop detection', () => {
       // First message → loop fires
       await bot['channels'].get('telegram')!.onMessage!(makeInbound({ text: 'Trigger loop' }));
       await waitForMessages(sent, 1);
-      expect(sent[0]).toBe(LOOP_RESET_MSG);
+      expect(sent[0]).toContain('stalled and reset');
 
       // Second message → must use a fresh session (not the invalidated loopSession)
       await bot['channels'].get('telegram')!.onMessage!(makeInbound({ text: 'Message after reset' }));
@@ -347,7 +348,7 @@ describe('LettaBot tool loop detection', () => {
       await new Promise((r) => setTimeout(r, 100));
 
       expect(sent).toHaveLength(1);
-      expect(sent[0]).toBe(LOOP_RESET_MSG);
+      expect(sent[0]).toContain('stalled and reset');
     });
   });
 
@@ -385,7 +386,7 @@ describe('LettaBot tool loop detection', () => {
       await bot['channels'].get('telegram')!.onMessage!(makeInbound());
       await waitForMessages(sent, 1);
 
-      expect(sent[0]).toBe(LOOP_RESET_MSG);
+      expect(sent[0]).toContain('stalled and reset');
       expect(session.abort).toHaveBeenCalledTimes(1);
     });
 
@@ -424,7 +425,7 @@ describe('LettaBot tool loop detection', () => {
 
       await bot['channels'].get('telegram')!.onMessage!(makeInbound({ text: 'First' }));
       await waitForMessages(sent, 1);
-      expect(sent[0]).toBe(LOOP_RESET_MSG);
+      expect(sent[0]).toContain('stalled and reset');
 
       await bot['channels'].get('telegram')!.onMessage!(makeInbound({ text: 'Second' }));
       await waitForMessages(sent, 2);

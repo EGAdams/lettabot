@@ -84,13 +84,18 @@ fi
 SUPERVISOR_PIDFILE="${SCRIPT_DIR}/.supervisor.pid"
 
 # Prevent multiple supervisor instances using a PID file.
+# The PID must be alive AND actually be this script — after a reboot the
+# recycled PID can belong to an unrelated process (e.g. dashboard server.py),
+# which crash-looped the systemd unit for hours on 2026-07-12.
 if [[ -f "${SUPERVISOR_PIDFILE}" ]]; then
   EXISTING_PID="$(cat "${SUPERVISOR_PIDFILE}" 2>/dev/null || true)"
-  if [[ -n "${EXISTING_PID}" ]] && kill -0 "${EXISTING_PID}" 2>/dev/null; then
+  if [[ -n "${EXISTING_PID}" ]] && kill -0 "${EXISTING_PID}" 2>/dev/null \
+     && tr '\0' ' ' < "/proc/${EXISTING_PID}/cmdline" 2>/dev/null | grep -q 'start_scissari_bot.sh'; then
     echo "Error: another Scissari supervisor is already running (PID ${EXISTING_PID})."
     echo "       Run 'kill ${EXISTING_PID}' to stop it, or delete ${SUPERVISOR_PIDFILE}."
     exit 1
   fi
+  echo "Ignoring stale supervisor PID file (PID ${EXISTING_PID} is not a Scissari supervisor)."
 fi
 echo $$ > "${SUPERVISOR_PIDFILE}"
 

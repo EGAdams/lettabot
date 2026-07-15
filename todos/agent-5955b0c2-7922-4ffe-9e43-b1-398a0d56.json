@@ -2,14 +2,44 @@
   "version": 1,
   "todos": [
     {
+      "id": "todo-239ccc26-b0f3-497f-8ecd-f34c4f8639dc",
+      "text": "When EG returns, tell them dashboard checks stayed green but outbound lettabot-message is blocked because all channel tokens are missing and no default channel/chat is configured.",
+      "created": "2026-06-20T05:30:55.091Z",
+      "due": null,
+      "snoozed_until": "2026-07-10T00:00:00.000Z",
+      "recurring": null,
+      "completed": false,
+      "completed_at": null
+    },
+    {
       "id": "todo-318cb9b9-31bc-4265-a9b7-91b337bc705b",
       "text": "When EG starts the next conversation, resume two threads: 1) publish the latest dashboard to the Windows 10 docroot and provide a working trycloudflare link that opens directly on Android, and 2) continue the MFF/e_two_e_processing work and verify the correct project path/context before proceeding.",
       "created": "2026-06-02T23:13:59.214Z",
       "due": null,
+      "snoozed_until": "2026-06-10T13:00:00.000Z",
+      "recurring": null,
+      "completed": true,
+      "completed_at": "2026-06-19T14:36:05.782Z"
+    },
+    {
+      "id": "todo-3447cc83-ee0a-4712-b2f9-da0f0aab14fb",
+      "text": "Verify dashboard changes and publish to Windows 10 docroot with working trycloudflare link.",
+      "created": "2026-06-19T14:36:35.202Z",
+      "due": null,
       "snoozed_until": null,
       "recurring": null,
-      "completed": false,
-      "completed_at": null
+      "completed": true,
+      "completed_at": "2026-06-19T14:41:31.658Z"
+    },
+    {
+      "id": "todo-96dd2112-06d0-4337-88e5-6ef07b42d7f5",
+      "text": "Need a configured lettabot channel/chat before I can notify EG; direct send failed with '--channel is required (no default available)'.",
+      "created": "2026-06-23T12:01:21.546Z",
+      "due": null,
+      "snoozed_until": null,
+      "recurring": null,
+      "completed": true,
+      "completed_at": "2026-06-23T12:07:06.647Z"
     }
   ]
 }

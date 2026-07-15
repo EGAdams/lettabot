@@ -91,3 +91,13 @@ Started channel: Telegram
 [Bot] Stream result: success=true, hasResponse=true, resultLen=19
 [Bot] Stream message counts: { assistant: 7, result: 1 }
 [Queue] Finished processing all messages
+...
+...
+...
+[Stream] type=reasoning {"type":"reasoning","content":" URL","uuid":"be73b779-175e-4456-8596-050bea7f0880"}
+[Stream] type=reasoning {"type":"reasoning","content":".\"","uuid":"be73b779-175e-4456-8596-050bea7f0880"}
+[Stream] type=tool_call {"type":"tool_call","toolCallId":"call_zhMUdxEDwLyRUeUfKkqOcoKR","toolName":"send_message_to_agent_and_wait_for_reply","toolInput":{},"uuid":"be73b779-175e-4456-8596-050bea7f0881"}
+[Bot] Agent stuck in send_message_to_agent_and_wait_for_reply loop (3 calls), aborting and resetting conversation
+[Bot] Invalidating session (key=shared)
+[Queue] Finished processing all messages
+```

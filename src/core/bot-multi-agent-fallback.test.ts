@@ -5,12 +5,10 @@ import { tmpdir } from 'node:os';
 
 const {
   retrieveAgent,
-  createConversation,
-  createConversationMessage,
+  streamAgentMessage,
 } = vi.hoisted(() => ({
   retrieveAgent: vi.fn(),
-  createConversation: vi.fn(),
-  createConversationMessage: vi.fn(),
+  streamAgentMessage: vi.fn(),
 }));
 
 vi.mock('@letta-ai/letta-code-sdk', () => ({
@@ -25,12 +23,8 @@ vi.mock('@letta-ai/letta-client', () => ({
   Letta: class MockLettaClient {
     agents = {
       retrieve: retrieveAgent,
-    };
-
-    conversations = {
-      create: createConversation,
       messages: {
-        create: createConversationMessage,
+        stream: streamAgentMessage,
       },
     };
   },
@@ -118,8 +112,7 @@ describe('LettaBot multi-agent fallback', () => {
     retrieveAgent
       .mockResolvedValueOnce({ name: 'Scissari' })
       .mockResolvedValueOnce({ name: 'Hailey' });
-    createConversation.mockResolvedValue({ id: 'conv-hailey' });
-    createConversationMessage.mockResolvedValue((async function* () {
+    streamAgentMessage.mockResolvedValue((async function* () {
       yield {
         message_type: 'assistant_message',
         content: 'I am working on the ledger cleanup run.',
@@ -179,7 +172,8 @@ describe('LettaBot multi-agent fallback', () => {
     expect(sent).toEqual([
       'Hailey replied:\n\nI am working on the ledger cleanup run.',
     ]);
-    expect(createConversation).toHaveBeenCalledWith({ agent_id: 'agent-hailey' });
-    expect(createConversationMessage).toHaveBeenCalledTimes(1);
+    // Delegation goes to the target agent's primary thread, not a throwaway conversation.
+    expect(streamAgentMessage).toHaveBeenCalledTimes(1);
+    expect(streamAgentMessage.mock.calls[0]?.[0]).toBe('agent-hailey');
   });
 });

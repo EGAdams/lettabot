@@ -248,25 +248,30 @@ Do not ask the sender to provide another agent ID.
 `;
 
   const sendAndCollect = async (payload: string) => {
-    const conversation = await client.conversations.create({
-      agent_id: otherAgentId,
-    });
-    const stream = await client.conversations.messages.create(conversation.id, {
+    // Send to the target agent's primary message thread instead of a throwaway
+    // conversation. Creating a fresh conversation per call strips the target of
+    // its memory and working context; with a broken/slow tool it can then
+    // spiral retrying that tool and never emit a reply (stop_reason=max_steps),
+    // which gets reported back as an error and makes the sender loop. The
+    // agent's main thread has the context it needs to answer directly.
+    const stream = await (client as unknown as {
+      agents: {
+        messages: {
+          stream: (
+            agentId: string,
+            body: Record<string, unknown>,
+          ) => Promise<AsyncIterable<Record<string, unknown>>>;
+        };
+      };
+    }).agents.messages.stream(otherAgentId, {
       messages: [{ role: 'user', content: payload }],
-      streaming: true,
       stream_tokens: true,
-      include_pings: true,
-      background: true,
-      max_steps: 6,
-      include_compaction_messages: true,
+      max_steps: 12,
     });
     const result = await collectAssistantReply(
       stream as AsyncIterable<Record<string, unknown>>,
     );
-    return {
-      ...result,
-      conversationId: result.conversationId ?? conversation.id,
-    };
+    return result;
   };
 
   let { reply, runId, stopReason, conversationId } = await sendAndCollect(
@@ -300,7 +305,9 @@ Do not ask the sender to provide another agent ID.
   }
 
   if (!reply) {
-    return `Message was sent to ${targetAgent.name} (${otherAgentId}), but no assistant reply was returned. Target run: ${runId ?? 'unknown'}, stop_reason: ${stopReason ?? 'unknown'}.`;
+    // The send succeeded — only the reply is missing. Frame it as delivered and
+    // tell the sender not to resend, so it doesn't retry the delegation in a loop.
+    return `Message was delivered to ${targetAgent.name} (${otherAgentId}), but it did not return a final reply (run: ${runId ?? 'unknown'}, stop_reason: ${stopReason ?? 'unknown'}). Do not resend the same message — it was received. Tell the user the request was delivered and a reply is still pending.`;
   }
 
   return `${targetAgent.name} replied:\n\n${reply}`;
